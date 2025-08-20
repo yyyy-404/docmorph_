@@ -1,0 +1,101 @@
+/* 全局设置：扁平化 + 玻璃拟态 + 银色调 */
+QWidget {
+    background-color: #f2f3f5;
+    font-family: 'LXGW WenKai Light';
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+}
+
+/* 按钮：扁平 + 半玻璃圆角 */
+QPushButton {
+    background: rgba(255, 255, 255, 0.5);
+    border: 1px solid #d0d0d0;
+    border-radius: 10px;
+    padding: 8px 16px;
+    color: #333;
+    backdrop-filter: blur(8px);
+    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+QPushButton:hover {
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid #aaa;
+}
+
+QPushButton:pressed {
+    background: rgba(240, 240, 240, 0.8);
+}
+
+/* 输入框和下拉框：轻边框 + 圆角 */
+QLineEdit, QComboBox {
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+
+/* 标签加粗 */
+QLabel {
+    font-weight: bold;
+    color: #222;
+}
+
+/* 分组框（LabelFrame）玻璃样式 */
+QGroupBox {
+    border: 1px solid rgba(200, 200, 200, 0.6);
+    border-radius: 10px;
+    margin-top: 15px;
+    background-color: rgba(255, 255, 255, 0.4);
+    backdrop-filter: blur(6px);
+    padding: 10px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    color: #444;
+    background-color: transparent;
+    font-weight: bold;
+}
+
+/* 进度条风格：绿色条 + 圆角背景 */
+QProgressBar {
+    border: 1px solid #c0c0c0; /* 进度条边框 */
+    border-radius: 5px; /* 边框圆角 */
+    background-color: #f0f0f0; /* 进度条背景色 */
+    text-align: center; /* 文本居中 */
+    color: black; /* 文本颜色 */
+}
+
+QProgressBar::chunk {
+    background-color: #ADD8E6; /* 淡蓝色填充 */
+    border-radius: 4px; /* 填充块的圆角 */
+    /* 可以添加一个渐变效果，让颜色更自然 */
+    /*background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #ADD8E6, stop: 1 #87CEEB); */
+}
+
+/* 拖拽高亮：蓝色虚线 + 银色背景 */
+QWidget[dragging="true"] {
+    border: 2px dashed #90caf9;
+    background-color: #85b1d7;
+}
+
+
+/* 拖拽区域 */
+#DropArea {
+    border: 2px dashed #bbb;
+    border-radius: 10px;
+    background-color: #f5f5f7;
+    color: #999;
+    font-size: 18px;
+    font-weight: 500;
+    padding: 30px;
+}
+
+#DropArea[dragging="true"] {
+    border: 2px dashed #4a90e2;
+    background-color: #e3f2fd;
+    color: #333;
+}
