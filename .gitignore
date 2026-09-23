@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 前端依赖（构建产物 docmorph/ui/webapp 需要随包发布，因此不忽略）
+frontend/node_modules/
+frontend/dist/
+
+# 运行时产物：不允许出现在仓库里
+/input/
+/output/
+/logs/
+/temp/
+config.ini
+*.log
+
+# 测试与构建
+.pytest_cache/
+.pytest_tmp/
+.tmp_pytest/
+.coverage
+htmlcov/
+build/
+dist/
+.ruff_cache/
+
+# 本地实验/探针工作区
+.lab/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docmorph"
+version = "0.3.0"
+description = "Windows 优先的本地文档格式转换工具：PDF/DOCX/XLSX/MD/HTML/TXT/CSV/PPTX 互转（桌面界面 + 命令行）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "yyyy-404" }]
+keywords = ["pdf", "docx", "xlsx", "markdown", "converter", "desktop", "windows", "pandoc"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Office Suites",
+]
+
+# 核心依赖：全部是纯 Python 包，不含任何外部软件
+dependencies = [
+    "PyMuPDF>=1.24",          # PDF 解析 / 文本抽取 / 页面渲染（替代 poppler）
+    "pdf2docx>=0.5.8",        # PDF → DOCX
+    "python-docx>=1.1",       # DOCX 读写
+    "python-pptx>=0.6.23",    # PPTX 生成
+    "pandas>=2.0",            # 表格处理
+    "openpyxl>=3.1",          # XLSX 读写（pandas 读 Excel 需要）
+    "Pillow>=10.0",           # 图像处理
+    "pypandoc-binary>=1.13",  # 内置 pandoc 二进制，结构化文档转换
+    "pywebview>=5.0",         # 桌面窗口（Windows 使用系统 WebView2）
+    "pywin32>=306; sys_platform == 'win32'",  # Office COM 自动化（Word/Excel）
+]
+
+[project.optional-dependencies]
+# HTML→PDF 的纯 Python 兜底引擎。Windows 上还需要额外安装 GTK/Pango 运行时，
+# 因此在有 Microsoft Word 或 LibreOffice 的机器上通常不需要它。
+pdf-gtk = ["weasyprint>=60"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+docmorph = "docmorph.cli:main"
+docmorph-gui = "docmorph.ui:main"
+
+[tool.setuptools]
+packages = [
+    "docmorph",
+    "docmorph.backends",
+    "docmorph.cli",
+    "docmorph.settings",
+    "docmorph.ui",
+]
+
+[tool.setuptools.package-data]
+"docmorph" = ["resources/*"]
+"docmorph.ui" = ["webapp/*", "webapp/assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["."]
+markers = [
+    "needs_office: 需要 Microsoft Office（缺失时自动跳过）",
+    "needs_pandoc: 需要 pandoc（缺失时自动跳过）",
+    "slow: 会启动 Office 的真实转换用例",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+    ".venv",
+    "frontend",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+# RUF001/2/3：中文全角标点在文本里是正常的，不需要告警
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG001", "ARG002", "SLF001"]

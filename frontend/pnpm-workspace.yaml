@@ -1,0 +1,4 @@
+# pnpm 11 把依赖构建白名单放在这里（esbuild 需要执行安装脚本来放置二进制文件）
+allowBuilds:
+  esbuild: true
+  vue-demi: true

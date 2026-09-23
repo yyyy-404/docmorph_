@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# 开发 / 测试依赖
+pytest>=8.0
+pytest-cov>=4.0
+ruff>=0.6
+
+# 构建前端产物（仅在修改界面时需要）：Node.js 18+
+#   cd frontend && npm install && npm run build

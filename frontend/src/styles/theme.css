@@ -1,0 +1,209 @@
+/* DocMorph 视觉基线：浅灰背景 + 玻璃拟态卡片 + 淡蓝强调色。
+   调色板：#FFF9D2 #FFEBCC #BFDDF0 #8CC0EB，技术栈换成 Web 但视觉方向保持不变。 */
+
+:root {
+  --dm-bg: #f2f3f5;
+  --dm-bg-accent: #e9eef3;
+  --dm-card: rgba(255, 255, 255, 0.55);
+  --dm-card-strong: rgba(255, 255, 255, 0.78);
+  --dm-border: #d0d0d0;
+  --dm-border-soft: #e3e6ea;
+  --dm-text: #333333;
+  --dm-text-strong: #1f2226;
+  --dm-muted: #7d848d;
+  --dm-accent: #8cc0eb;
+  --dm-accent-soft: #add8e6;
+  --dm-accent-ink: #2c5f85;
+  --dm-cream: #fff9d2;
+  --dm-sand: #ffebcc;
+  --dm-mist: #bfddf0;
+  --dm-danger: #d98b8b;
+  --dm-success: #7fb69b;
+  --dm-radius: 12px;
+  --dm-radius-sm: 8px;
+  --dm-shadow: 0 2px 8px rgba(31, 34, 38, 0.08);
+  --dm-shadow-soft: 0 1px 3px rgba(31, 34, 38, 0.06);
+  --dm-font: 'LXGW WenKai Light', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    'PingFang SC', 'Source Han Sans SC', 'Segoe UI', system-ui, sans-serif;
+  --dm-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: linear-gradient(160deg, var(--dm-bg) 0%, var(--dm-bg-accent) 100%);
+  color: var(--dm-text);
+  font-family: var(--dm-font);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--dm-text);
+  background: var(--dm-card);
+  border: 1px solid var(--dm-border);
+  border-radius: var(--dm-radius-sm);
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--dm-card-strong);
+  border-color: #b4b8be;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: linear-gradient(180deg, var(--dm-accent-soft), var(--dm-accent));
+  border-color: #7fb0d8;
+  color: #14344a;
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: #dcb3b3;
+  color: #8d3b3b;
+}
+
+button.ghost {
+  background: transparent;
+}
+
+input[type='text'],
+select {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--dm-text);
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid #ccced2;
+  border-radius: var(--dm-radius-sm);
+  padding: 7px 10px;
+  width: 100%;
+}
+
+input[type='text']:focus,
+select:focus {
+  outline: 2px solid rgba(140, 192, 235, 0.55);
+  outline-offset: 0;
+  border-color: var(--dm-accent);
+}
+
+.card {
+  background: var(--dm-card);
+  border: 1px solid var(--dm-border-soft);
+  border-radius: var(--dm-radius);
+  box-shadow: var(--dm-shadow-soft);
+  padding: 14px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--dm-muted);
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.label {
+  color: var(--dm-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--dm-border-soft);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--dm-muted);
+  white-space: nowrap;
+}
+
+.tag.ok {
+  background: var(--dm-mist);
+  border-color: #a7cde6;
+  color: #1f4a66;
+}
+
+.tag.warn {
+  background: var(--dm-sand);
+  border-color: #e8cfa8;
+  color: #7a5316;
+}
+
+.tag.bad {
+  background: #f3dada;
+  border-color: #e0bcbc;
+  color: #8d3b3b;
+}
+
+.muted {
+  color: var(--dm-muted);
+}
+
+.scroll {
+  overflow: auto;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 145, 152, 0.35);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
