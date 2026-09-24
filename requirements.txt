@@ -1,10 +1,12 @@
-# DocMorph 运行依赖（Python 包）
+﻿# DocMorph Slim 运行依赖（GitHub 主仓库 / Source 版）
 #
-# 这些依赖**不包含**任何外部软件。若要使用「→PDF」的高保真转换，
-# 还需要在系统上安装 Microsoft Word/Excel、WPS Office 或 LibreOffice 之一，
-# 运行 `docmorph doctor` 可以查看当前机器的检测结果。
+# 仅包含运行所需的直接第三方包；传递依赖由 pip 自动解析。
+# 不包含：测试工具、静态检查、打包工具（如 pytest / ruff / pyinstaller）。
 #
-# 版本范围与 pyproject.toml 保持一致，方便一条命令复现运行环境。
+# 不含外部软件。「→PDF」高保真输出另需 Microsoft Word/Excel、WPS Office
+# 或 LibreOffice 之一；运行 `python -m docmorph doctor` 查看本机检测结果。
+#
+# 版本范围与 pyproject.toml dependencies 保持一致。
 
 PyMuPDF>=1.24
 pdf2docx>=0.5.8
@@ -16,6 +18,3 @@ Pillow>=10.0
 pypandoc-binary>=1.13
 pywebview>=5.0
 pywin32>=306; sys_platform == "win32"
-
-# 可选：HTML→PDF 的纯 Python 引擎（Windows 需要额外安装 GTK/Pango，默认不装）
-# weasyprint>=60

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -65,8 +66,14 @@ class TempWorkspace:
     """
 
     def __init__(self, root: Path | None = None, prefix: str = "session") -> None:
-        base = Path(root) if root else app_data_dir() / "temp"
-        self.path = base / f"{prefix}-{uuid.uuid4().hex[:8]}"
+        if root is None or str(root) in {"", "."}:
+            base = app_data_dir() / "temp"
+        else:
+            base = Path(root).expanduser()
+            if not base.is_absolute():
+                base = base.resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        self.path = (base / f"{prefix}-{uuid.uuid4().hex[:8]}").resolve()
         self.path.mkdir(parents=True, exist_ok=True)
         self._closed = False
 
@@ -99,3 +106,45 @@ def system_temp_dir() -> Path:
     """系统临时目录（供不需要会话隔离的场景使用）。"""
     return Path(tempfile.gettempdir())
 
+
+def temp_root(custom: Path | None = None) -> Path:
+    """临时工作区根目录（默认 ``%LOCALAPPDATA%\\DocMorph\\temp``）。
+
+    空值 / ``Path(".")`` 一律视为“未指定”，返回默认绝对路径，
+    避免相对路径被 Word 等 COM 组件按 system32 解析。
+    """
+    if custom is None or str(custom) in {"", "."}:
+        return app_data_dir() / "temp"
+    path = Path(custom).expanduser()
+    return path if path.is_absolute() else path.resolve()
+
+
+def cleanup_stale_temp(root: Path | None = None, max_age_hours: float = 24.0) -> int:
+    """清理过期的遗留临时目录（崩溃/强杀留下的 ``session-*`` / ``convert-*``）。
+
+    只删除"看起来是本程序创建、且超过保留时长"的目录；任何失败都被忽略。
+    返回删除的目录数。
+    """
+    base = temp_root(root)
+    if not base.is_dir():
+        return 0
+    deadline = time.time() - max(0.0, max_age_hours) * 3600
+    removed = 0
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        if not any(entry.name.startswith(prefix) for prefix in ("session-", "convert-", "job-")):
+            continue
+        try:
+            if entry.stat().st_mtime >= deadline:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed += 1
+    return removed

@@ -30,7 +30,9 @@ class Settings:
     input_directory: Path
     output_directory: Path
     log_directory: Path
-    temp_directory: Path
+    #: None = 未指定专用临时目录（使用 %LOCALAPPDATA%\DocMorph\temp）。
+    #: 禁止把空字符串解析成 Path(".")，否则中间文件会依赖当前工作目录。
+    temp_directory: Path | None
     # [conversion]
     conflict_policy: str
     pdf_backend_preference: str
@@ -39,6 +41,7 @@ class Settings:
     keep_structure: bool
     xlsx_csv_mode: str
     extract_media: bool
+    temp_retention_hours: int
     # [defaults]
     default_targets: dict[str, str] = field(default_factory=dict)
     default_target: str = "pdf"
@@ -52,8 +55,9 @@ class Settings:
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        for key in ("input_directory", "output_directory", "log_directory", "temp_directory"):
+        for key in ("input_directory", "output_directory", "log_directory"):
             data[key] = str(data[key])
+        data["temp_directory"] = "" if self.temp_directory is None else str(self.temp_directory)
         return data
 
     def with_overrides(self, **changes: Any) -> Settings:
@@ -76,6 +80,7 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "keep_structure": "true",
         "xlsx_csv_mode": "sheets",
         "extract_media": "true",
+        "temp_retention_hours": "24",
     },
     "defaults": {
         "default_target": "pdf",
@@ -151,11 +156,17 @@ def build_settings(
             return parser(section, key, DEFAULTS[section][key], *args)
 
     temp_raw = get("paths", "temp_directory").strip()
+    if not temp_raw or temp_raw == ".":
+        temp_directory: Path | None = None
+    else:
+        temp_directory = Path(temp_raw).expanduser()
+        if not temp_directory.is_absolute():
+            temp_directory = temp_directory.resolve()
     settings = Settings(
         input_directory=Path(get("paths", "input_directory")).expanduser(),
         output_directory=Path(get("paths", "output_directory")).expanduser(),
         log_directory=Path(get("paths", "log_directory")).expanduser(),
-        temp_directory=Path(temp_raw).expanduser() if temp_raw else Path(""),
+        temp_directory=temp_directory,
         conflict_policy=safe("conversion.conflict_policy", parse_choice, None, CONFLICT_POLICIES),
         pdf_backend_preference=safe(
             "conversion.pdf_backend_preference", parse_choice, None, PDF_BACKEND_PREFERENCES
@@ -167,6 +178,7 @@ def build_settings(
         keep_structure=safe("conversion.keep_structure", parse_bool, None),
         xlsx_csv_mode=safe("conversion.xlsx_csv_mode", parse_choice, None, XLSX_CSV_MODES),
         extract_media=safe("conversion.extract_media", parse_bool, None),
+        temp_retention_hours=safe("conversion.temp_retention_hours", parse_int, None, 0, 720),
         default_targets={
             key.removeprefix("target_"): get("defaults", key)
             for key in DEFAULTS["defaults"]
@@ -209,6 +221,8 @@ def render_default_ini() -> str:
         f"xlsx_csv_mode = {DEFAULTS['conversion']['xlsx_csv_mode']}",
         "# 转 Markdown 时是否把图片抽取到同名 _media 目录",
         f"extract_media = {DEFAULTS['conversion']['extract_media']}",
+        "# 启动时清理多少小时之前的遗留临时目录（0 表示不清理）",
+        f"temp_retention_hours = {DEFAULTS['conversion']['temp_retention_hours']}",
         "",
         "[defaults]",
         "# 各源格式的默认目标格式",
@@ -247,7 +261,14 @@ def coerce_changes(changes: dict[str, Any]) -> dict[str, Any]:
     for key, value in changes.items():
         if value is None:
             continue
-        if key in {"input_directory", "output_directory", "log_directory", "temp_directory"}:
+        if key == "temp_directory":
+            text = str(value).strip()
+            if not text or text == ".":
+                result[key] = None
+            else:
+                path = Path(text).expanduser()
+                result[key] = path if path.is_absolute() else path.resolve()
+        elif key in {"input_directory", "output_directory", "log_directory"}:
             result[key] = Path(str(value)).expanduser()
         elif key == "conflict_policy":
             result[key] = parse_choice("conversion", key, str(value), CONFLICT_POLICIES)
@@ -259,6 +280,8 @@ def coerce_changes(changes: dict[str, Any]) -> dict[str, Any]:
             result[key] = parse_int("conversion", key, str(value), 1, 32)
         elif key == "office_timeout_seconds":
             result[key] = parse_int("conversion", key, str(value), 10, 7200)
+        elif key == "temp_retention_hours":
+            result[key] = parse_int("conversion", key, str(value), 0, 720)
         elif key in {"keep_structure", "extract_media"}:
             result[key] = value if isinstance(value, bool) else parse_bool("conversion", key, str(value))
         elif key == "default_target":
@@ -286,7 +309,7 @@ def render_settings_ini(settings: Settings) -> str:
         f"input_directory = {settings.input_directory}\n"
         f"output_directory = {settings.output_directory}\n"
         f"log_directory = {settings.log_directory}\n"
-        f"temp_directory = {settings.temp_directory if str(settings.temp_directory) != '.' else ''}\n"
+        f"temp_directory = {settings.temp_directory if settings.temp_directory is not None else ''}\n"
         "\n"
         "[conversion]\n"
         f"conflict_policy = {settings.conflict_policy}\n"
@@ -296,6 +319,7 @@ def render_settings_ini(settings: Settings) -> str:
         f"keep_structure = {str(settings.keep_structure).lower()}\n"
         f"xlsx_csv_mode = {settings.xlsx_csv_mode}\n"
         f"extract_media = {str(settings.extract_media).lower()}\n"
+        f"temp_retention_hours = {settings.temp_retention_hours}\n"
         "\n"
         "[defaults]\n"
         f"default_target = {settings.default_target}\n"

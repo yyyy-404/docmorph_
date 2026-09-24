@@ -94,13 +94,28 @@ class Api:
             "config_path": str(self.service.config.path),
             "config_warnings": list(self.service.config.warnings),
             "webview_available": True,
+            "safe_mode": self.service.safe_mode,
+            "capability_pending": not self.service.capability_provider.loaded,
+            "temp_retention_hours": settings.temp_retention_hours,
         }
 
     def get_catalog(self) -> list[dict[str, Any]]:
         return self.service.catalog()
 
     def get_capabilities(self) -> dict[str, Any]:
-        return self.service.capabilities_payload()
+        """能力快照：**不阻塞界面**。
+
+        未完成完整检测时先返回启动轻量结果（``pending=True``），同时后台开始预热；
+        前端会轮询直到 ``pending`` 变假。
+        """
+        payload = self.service.capabilities_snapshot(wait=False)
+        if payload.get("pending"):
+            self.service.start_capability_warmup()
+        return payload
+
+    def recheck_capabilities(self) -> dict[str, Any]:
+        """手动重新检测（系统能力页的"重新检测"按钮）：真实导入依赖做权威自检。"""
+        return self.service.deep_recheck_capabilities()
 
     def get_logs(self, limit: int = 300) -> list[str]:
         return [entry.format() for entry in self.service.log_entries(int(limit))]
@@ -168,6 +183,7 @@ class Api:
             input_root=input_root,
             keep_structure=keep_structure,
             conflict=conflict,
+            options={"progress": self._on_page_progress},
         )
         if not requests:
             return {"ok": False, "message": "没有可转换的文件"}
@@ -185,6 +201,47 @@ class Api:
         )
         self._worker.start()
         return {"ok": True, "message": f"已开始转换 {len(requests)} 个文件"}
+
+    def _on_page_progress(self, done: int, total: int, label: str = "") -> None:
+        """后端报告的页级进度（PDF 抽取/渲染等支持页进度的能力）。"""
+        with self._lock:
+            if not self.running:
+                return
+            prefix = f"{label} " if label else ""
+            self.progress_text = f"{prefix}第 {done}/{total} 页"
+
+    # ------------------------------------------------------------------ PDF 工具
+    def merge_pdfs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """合并 PDF：``{"inputs": [...], "output": "merged.pdf"}``。"""
+        payload = payload or {}
+        inputs = [Path(item) for item in payload.get("inputs", []) if item]
+        output = payload.get("output") or str(
+            Path(self.service.settings.output_directory) / "merged.pdf"
+        )
+        if len(inputs) < 2:
+            return {"ok": False, "message": "请至少选择两个 PDF 文件"}
+        result = self.service.merge_pdfs(inputs, output)
+        return {
+            "ok": result.ok,
+            "message": result.summary() if result.ok else (result.error or result.status.label),
+            "outputs": [str(path) for path in result.outputs],
+        }
+
+    def split_pdf(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """拆分 PDF：``{"input": "a.pdf", "pages": "1-3,5", "output_directory": "..."}``。"""
+        payload = payload or {}
+        source = payload.get("input")
+        if not source:
+            return {"ok": False, "message": "请选择要拆分的 PDF"}
+        output_dir = payload.get("output_directory") or str(self.service.settings.output_directory)
+        result = self.service.split_pdf(
+            source, output_dir, ranges=payload.get("pages") or None, conflict=payload.get("conflict_policy")
+        )
+        return {
+            "ok": result.ok,
+            "message": result.summary() if result.ok else (result.error or result.status.label),
+            "outputs": [str(path) for path in result.outputs],
+        }
 
     def cancel_conversion(self) -> dict[str, Any]:
         if not self.running:
@@ -207,6 +264,7 @@ class Api:
                 "xlsx_csv_mode",
                 "extract_media",
                 "pdf_backend_preference",
+                "temp_retention_hours",
             }:
                 changes[aliases.get(key, key)] = value
         if not changes:

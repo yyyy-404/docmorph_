@@ -14,11 +14,18 @@
 from __future__ import annotations
 
 import importlib
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from docmorph.backends.base import BackendOutcome, ConversionBackend, ensure_parent, verify_output
+from docmorph.backends.base import (
+    BackendOutcome,
+    ConversionBackend,
+    ensure_parent,
+    report_progress,
+    verify_output,
+)
 from docmorph.capability import CapabilityReport
 from docmorph.errors import ConversionFailedError, DependencyMissingError
 from docmorph.formats import Format
@@ -28,13 +35,24 @@ RENDER_DPI = 150
 
 
 def import_pymupdf():
-    """导入 PyMuPDF（历史名 ``fitz``，新名 ``pymupdf``）。"""
+    """导入 PyMuPDF（历史名 ``fitz``，新名 ``pymupdf``）。
+
+    导入后把新模块登记到 ``sys.modules["fitz"]``：仍使用旧导入名的第三方库
+    （例如 pdf2docx）会复用同一个模块对象，从而不再打印
+    「The `fitz` API is deprecated ...」这类会污染 CLI ``--json`` 输出的提示。
+    """
+    module = None
     for module_name in ("pymupdf", "fitz"):
         try:
-            return importlib.import_module(module_name)
+            module = importlib.import_module(module_name)
+            break
         except ImportError:
             continue
-    raise DependencyMissingError("PyMuPDF", "python")
+    if module is None:
+        raise DependencyMissingError("PyMuPDF", "python")
+    if "fitz" not in sys.modules:
+        sys.modules["fitz"] = module
+    return module
 
 
 def import_module_or_raise(module_name: str, package_hint: str) -> Any:
@@ -103,12 +121,14 @@ class PythonBackend(ConversionBackend):
         pymupdf = import_pymupdf()
         pages: list[str] = []
         with pymupdf.open(str(source)) as document:
+            total = document.page_count
             for index, page in enumerate(document, start=1):
                 text = page.get_text().strip()
                 if options.get("page_markers"):
                     pages.append(f"--- 第 {index} 页 ---\n{text}")
                 else:
                     pages.append(text)
+                report_progress(options, index, total, "提取文本")
         content = "\n\n".join(pages)
         if not content.strip():
             raise ConversionFailedError("PDF 中没有可提取的文本（可能是扫描件，需要 OCR）", self.label)
@@ -141,6 +161,7 @@ class PythonBackend(ConversionBackend):
         dpi = int(options.get("render_dpi", RENDER_DPI))
 
         with pymupdf.open(str(source)) as document:
+            total = document.page_count
             for index, page in enumerate(document):
                 image_path = images_dir / f"page-{index + 1:04d}.png"
                 page.get_pixmap(dpi=dpi).save(str(image_path))
@@ -155,6 +176,7 @@ class PythonBackend(ConversionBackend):
                     notes_frame.text = text
                     notes_available = True
                 page_count += 1
+                report_progress(options, page_count, total, "渲染页面")
 
         if page_count == 0:
             raise ConversionFailedError("PDF 没有可渲染的页面", self.label)
@@ -293,3 +315,63 @@ def sheet_names(path: Path) -> Sequence[str]:
     """列出 Excel 工作表名（供 UI 预览）。"""
     pandas = import_module_or_raise("pandas", "pandas")
     return list(pandas.read_excel(path, sheet_name=None).keys())
+
+
+# ---------------------------------------------------------------------- PDF 工具
+
+def pdf_page_count(path: Path) -> int:
+    """PDF 页数。"""
+    pymupdf = import_pymupdf()
+    with pymupdf.open(str(path)) as document:
+        return int(document.page_count)
+
+
+def parse_page_ranges(spec: str | Sequence[tuple[int, int]] | None, page_count: int) -> list[tuple[int, int]]:
+    """解析页范围。
+
+    支持 ``"1-3,5,7-9"`` / ``"单页 4"`` / ``"3-"``（到末页）等形式，返回 1 基闭区间列表；
+    为空时表示「每页一个文件」。语法错误或越界会抛 :class:`ValueError`（由上层翻译成中文提示）。
+    """
+    if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], tuple):
+        ranges = [(int(start), int(end)) for start, end in spec]  # type: ignore[misc]
+    else:
+        text = str(spec or "").strip()
+        if not text:
+            return [(index, index) for index in range(1, page_count + 1)]
+        ranges = []
+        for chunk in text.replace("，", ",").split(","):
+            item = chunk.strip()
+            if not item:
+                continue
+            if "-" in item:
+                head, _, tail = item.partition("-")
+                try:
+                    start = int(head) if head.strip() else 1
+                    end = int(tail) if tail.strip() else page_count
+                except ValueError:
+                    raise ValueError(f"无法识别的页范围：{item}（示例：1-3,5,7-9）") from None
+            else:
+                try:
+                    start = end = int(item)
+                except ValueError:
+                    raise ValueError(f"无法识别的页码：{item}（示例：1-3,5,7-9）") from None
+            if start < 1 or end < 1 or start > end:
+                raise ValueError(f"页范围不合法：{item}")
+            if end > page_count:
+                raise ValueError(f"页范围超出文档页数（共 {page_count} 页）：{item}")
+            ranges.append((start, end))
+
+    if not ranges:
+        raise ValueError("没有可提取的页范围")
+    return ranges
+
+
+def extract_pages(source: Path, target: Path, start: int, end: int) -> Path:
+    """把 ``start``~``end`` 页（1 基闭区间）单独写成一个 PDF。"""
+    pymupdf = import_pymupdf()
+    ensure_parent(target)
+    with pymupdf.open(str(source)) as document, pymupdf.open() as out:
+        out.insert_pdf(document, from_page=start - 1, to_page=end - 1)
+        out.save(str(target))
+    verify_output(target, "PDF 拆分")
+    return target

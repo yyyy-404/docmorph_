@@ -142,6 +142,62 @@ def _session_log_path(log_dir: Path) -> Path:
     return Path(log_dir) / f"docmorph_{stamp}.log"
 
 
+#: 单个日志文件大小上限与备份数量
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+#: 日志目录中保留的会话文件数量（含当前）
+LOG_KEEP_SESSIONS = 10
+
+
+def prune_old_logs(directory: Path, keep: int = LOG_KEEP_SESSIONS, current: Path | None = None) -> int:
+    """清理旧的会话日志文件，只保留最近 ``keep`` 个（``current`` 一定保留）。
+
+    轮转文件 ``docmorph_xxx.log.1/.2/.3`` 与其主文件视为同一组。
+    返回删除的文件数。**任何失败都被吞掉并返回 0**：清理日志绝不能影响启动或日志写入。
+    """
+    try:
+        groups: dict[str, list[Path]] = {}
+        for path in Path(directory).glob("docmorph_*.log*"):
+            if path.is_file():
+                groups.setdefault(path.name.split(".log", 1)[0] + ".log", []).append(path)
+        if current is not None:
+            # 当前会话文件可能尚未创建（delay=True），这里只登记名字，不 stat
+            groups.setdefault(current.name, [])
+
+        def _newest(item: tuple[str, list[Path]]) -> float:
+            """以主日志文件的时间作为该会话的年龄（备份文件不参与，否则会把旧会话当新的）。"""
+            name, paths = item
+            for path in paths:
+                if path.name == name:
+                    try:
+                        return path.stat().st_mtime
+                    except OSError:
+                        break
+            stamps = []
+            for path in paths:
+                try:
+                    stamps.append(path.stat().st_mtime)
+                except OSError:
+                    continue
+            return max(stamps) if stamps else 0.0
+
+        ordered = sorted(groups.items(), key=_newest, reverse=True)
+        removed = 0
+        for index, (name, paths) in enumerate(ordered):
+            if index < keep or (current is not None and name == current.name):
+                continue
+            for path in paths:
+                try:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+                except OSError:
+                    continue
+        return removed
+    except Exception:
+        # 清理日志是"尽力而为"的辅助行为，失败不应影响任何主流程
+        return 0
+
+
 def setup_logging(
     log_dir: os.PathLike | str,
     level: str = "INFO",
@@ -174,9 +230,20 @@ def setup_logging(
         directory = Path(log_dir)
         directory.mkdir(parents=True, exist_ok=True)
         log_file = _session_log_path(directory)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8", delay=True)
+        # 轮转：单个文件最大 2MB，保留 3 个备份；再叠加会话文件数量上限，
+        # 保证日志目录不会无限增长（旧实现每个进程生成一个新文件且从不清理）。
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+            delay=True,
+        )
         file_handler.setFormatter(formatter)
         downstream.append(file_handler)
+        # 清理旧日志是"尽力而为"：即使这里出错也不能影响日志系统本身
+        with contextlib.suppress(Exception):
+            prune_old_logs(directory, keep=LOG_KEEP_SESSIONS, current=log_file)
     if console:
         stream = logging.StreamHandler()
         stream.setFormatter(formatter)

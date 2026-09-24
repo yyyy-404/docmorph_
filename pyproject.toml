@@ -37,11 +37,6 @@ dependencies = [
 # HTML→PDF 的纯 Python 兜底引擎。Windows 上还需要额外安装 GTK/Pango 运行时，
 # 因此在有 Microsoft Word 或 LibreOffice 的机器上通常不需要它。
 pdf-gtk = ["weasyprint>=60"]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.6",
-]
 
 [project.scripts]
 docmorph = "docmorph.cli:main"
@@ -60,16 +55,6 @@ packages = [
 "docmorph" = ["resources/*"]
 "docmorph.ui" = ["webapp/*", "webapp/assets/*"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra"
-pythonpath = ["."]
-markers = [
-    "needs_office: 需要 Microsoft Office（缺失时自动跳过）",
-    "needs_pandoc: 需要 pandoc（缺失时自动跳过）",
-    "slow: 会启动 Office 的真实转换用例",
-]
-
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -84,6 +69,3 @@ exclude = [
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
 # RUF001/2/3：中文全角标点在文本里是正常的，不需要告警
 ignore = ["E501", "RUF001", "RUF002", "RUF003"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ARG001", "ARG002", "SLF001"]

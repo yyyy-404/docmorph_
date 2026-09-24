@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from docmorph.capability import CapabilityReport, detect
+from docmorph.capability import CapabilityProvider, CapabilityReport
 from docmorph.engine import ConversionEngine, make_request
 from docmorph.formats import Format, detect_format, parse_format
 from docmorph.jobs import JobOutcome, JobRunner, ProgressCallback
@@ -29,8 +29,12 @@ from docmorph.registry import (
 )
 from docmorph.results import ConflictPolicy, ConversionRequest, ConversionResult
 from docmorph.settings import ConfigManager, Settings
+from docmorph.settings.paths import cleanup_stale_temp
 
 logger = get_logger("services")
+
+#: 安全模式下禁用的后端（外部软件 + 需要 GTK 的引擎），只保留 pandoc 与纯 Python 能力
+SAFE_MODE_BACKENDS: tuple[str, ...] = ("word", "excel", "wps", "libreoffice", "weasyprint")
 
 
 class ApplicationService:
@@ -42,16 +46,42 @@ class ApplicationService:
         settings: Settings | None = None,
         logging_session: LoggingSession | None = None,
         enable_file_log: bool = True,
+        safe_mode: bool = False,
+        warmup_capabilities: bool = False,
     ) -> None:
         self.config = config or ConfigManager.load()
         self.settings = settings or self.config.settings()
+        self.safe_mode = safe_mode
+        self.disabled_backends = SAFE_MODE_BACKENDS if safe_mode else ()
         self._logging_session = logging_session or setup_logging(
             self.settings.log_directory, to_file=enable_file_log
         )
-        self.capabilities: CapabilityReport = detect()
+        # 能力检测完全惰性：这里不做任何重型依赖导入，窗口/命令可以先跑起来
+        self.capability_provider = CapabilityProvider()
         self.engine = ConversionEngine(
-            settings=self.settings, capabilities=self.capabilities
+            settings=self.settings,
+            capabilities=self.capability_provider,
+            disabled_backends=self.disabled_backends,
         )
+        if warmup_capabilities and not safe_mode:
+            self.capability_provider.warmup()
+        self._cleanup_stale_temp()
+
+    def _cleanup_stale_temp(self) -> None:
+        """启动时清理过期临时目录（崩溃/强杀留下的中间文件）。失败只记日志。"""
+        try:
+            removed = cleanup_stale_temp(
+                self.settings.temp_directory, self.settings.temp_retention_hours
+            )
+            if removed:
+                logger.info("已清理 %d 个过期临时目录", removed)
+        except Exception:
+            logger.warning("清理过期临时目录失败", exc_info=True)
+
+    @property
+    def capabilities(self) -> CapabilityReport:
+        """完整能力报告（首次访问时才做完整检测）。"""
+        return self.capability_provider.report()
 
     # ------------------------------------------------------------------ 生命周期
     @property
@@ -84,10 +114,13 @@ class ApplicationService:
                 plan, reason = select_plan(
                     source,
                     target,
-                    self.engine.backends,
+                    self.engine.active_backends(),
                     self.capabilities,
                     self.settings.pdf_backend_preference,
                 )
+                if plan is None:
+                    # 让界面/CLI 看到与转换时一致的说明（含安全模式提示与 PDF 引擎安装引导）
+                    reason = self.engine.unavailable_reason(source, target) or reason
                 targets.append(
                     {
                         "target": target.value,
@@ -107,6 +140,36 @@ class ApplicationService:
 
     def capabilities_payload(self) -> dict[str, Any]:
         return self.capabilities.as_dict()
+
+    def capabilities_snapshot(self, wait: bool = True) -> dict[str, Any]:
+        """给界面用的能力快照。
+
+        :param wait: ``False`` 时**绝不阻塞**——未完成完整检测就返回启动轻量结果，
+            并把 ``pending`` 置为 ``True``，界面稍后重试（启动阶段用）。
+        """
+        if not wait and not self.capability_provider.loaded:
+            payload = self.capability_provider.startup().as_dict()
+            payload["pending"] = True
+        else:
+            payload = self.capabilities.as_dict()
+            payload["pending"] = False
+        payload["safe_mode"] = self.safe_mode
+        payload["warmup_error"] = self.capability_provider.warmup_error
+        return payload
+
+    def start_capability_warmup(self) -> bool:
+        """后台预热完整能力检测（安全模式下跳过）。"""
+        if self.safe_mode:
+            return False
+        return self.capability_provider.warmup()
+
+    def deep_recheck_capabilities(self) -> dict[str, Any]:
+        """真实导入依赖做一次权威自检（供"重新检测"按钮 / ``doctor --deep`` 使用）。
+
+        比默认的存在性检测慢，且可能触发第三方库的输出，因此只在用户显式要求时执行。
+        """
+        self.capability_provider.refresh(deep=True)
+        return self.capabilities_snapshot(wait=True)
 
     def settings_payload(self) -> dict[str, Any]:
         payload = self.settings.as_dict()
@@ -267,11 +330,34 @@ class ApplicationService:
     ) -> ConversionResult:
         return self.engine.merge_pdfs([Path(item) for item in inputs], Path(output_path))
 
+    def split_pdf(
+        self,
+        input_path: os.PathLike | str,
+        output_dir: os.PathLike | str,
+        ranges: str | None = None,
+        conflict: ConflictPolicy | str | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> ConversionResult:
+        """按页范围拆分 PDF（CLI 与 GUI 共用）。"""
+        policy = _conflict_policy(conflict) if conflict is not None else ConflictPolicy(
+            self.settings.conflict_policy
+        )
+        options: dict[str, Any] = {}
+        if on_progress is not None:
+            options["progress"] = on_progress
+        return self.engine.split_pdf(
+            Path(input_path), Path(output_dir), ranges, conflict=policy, progress=options
+        )
+
     # ------------------------------------------------------------------ 设置
     def update_settings(self, **changes: Any) -> Settings:
         """就地更新设置并重建引擎（GUI 设置面板使用）。"""
         self.settings = self.config.apply_changes(changes)
-        self.engine = ConversionEngine(settings=self.settings, capabilities=self.capabilities)
+        self.engine = ConversionEngine(
+            settings=self.settings,
+            capabilities=self.capability_provider,
+            disabled_backends=self.disabled_backends,
+        )
         return self.settings
 
 

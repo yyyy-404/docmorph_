@@ -238,7 +238,7 @@ def _settings_to_raw(settings: Settings) -> dict[str, dict[str, str]]:
             "input_directory": str(settings.input_directory),
             "output_directory": str(settings.output_directory),
             "log_directory": str(settings.log_directory),
-            "temp_directory": "" if str(settings.temp_directory) == "." else str(settings.temp_directory),
+            "temp_directory": "" if settings.temp_directory is None else str(settings.temp_directory),
         },
         "conversion": {
             "conflict_policy": settings.conflict_policy,
@@ -248,6 +248,7 @@ def _settings_to_raw(settings: Settings) -> dict[str, dict[str, str]]:
             "keep_structure": str(settings.keep_structure).lower(),
             "xlsx_csv_mode": settings.xlsx_csv_mode,
             "extract_media": str(settings.extract_media).lower(),
+            "temp_retention_hours": str(settings.temp_retention_hours),
         },
         "defaults": {"default_target": settings.default_target, **settings.default_targets},
     }

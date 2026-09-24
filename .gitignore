@@ -3,13 +3,22 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-*/
 venv/
+env/
 
-# 前端依赖（构建产物 docmorph/ui/webapp 需要随包发布，因此不忽略）
+# Packaging / local wheels
+*.whl
+*.egg
+/dist/
+/build/
+*.spec
+
+# Frontend deps (built webapp under docmorph/ui/webapp is tracked)
 frontend/node_modules/
 frontend/dist/
 
-# 运行时产物：不允许出现在仓库里
+# Runtime artifacts (never commit)
 /input/
 /output/
 /logs/
@@ -17,20 +26,26 @@ frontend/dist/
 config.ini
 *.log
 
-# 测试与构建
+# Tooling caches
 .pytest_cache/
-.pytest_tmp/
-.tmp_pytest/
-.coverage
-htmlcov/
-build/
-dist/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# 本地实验/探针工作区
+# Never ship: local tests / dev deps / agent reports / release zips
+/tests/
+requirements-dev.txt
+PROJECT_CONTEXT.md
+PROJECT_DEPENDENCY_CLEANUP_REPORT.md
+PROJECT_CLEANUP_REPORT.md
+SLIM_VS_FULL_AND_GITHUB_RELEASE.md
+*.zip
+
+# Local experiment workspaces
 .lab/
 
-# IDE / 系统
+# IDE / OS
 .idea/
 .vscode/
 .DS_Store

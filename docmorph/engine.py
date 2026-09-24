@@ -15,13 +15,18 @@ import shutil
 import threading
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from docmorph.backends import build_default_backends
 from docmorph.backends.base import ConversionBackend
-from docmorph.capability import CapabilityReport, detect
+from docmorph.capability import (
+    CapabilityProvider,
+    CapabilityReport,
+    FrozenProvider,
+    as_provider,
+)
 from docmorph.errors import (
     BackendUnavailableError,
     ConversionCancelledError,
@@ -35,6 +40,7 @@ from docmorph.logging_setup import get_logger
 from docmorph.registry import (
     Plan,
     declared_targets,
+    pdf_output_advice,
     plan_backends,
     plans,
     select_plan,
@@ -57,16 +63,35 @@ class ConversionEngine:
     def __init__(
         self,
         settings: Settings | None = None,
-        capabilities: CapabilityReport | None = None,
+        capabilities: CapabilityReport | CapabilityProvider | FrozenProvider | None = None,
         backends: dict[str, ConversionBackend] | None = None,
+        disabled_backends: Sequence[str] = (),
     ) -> None:
         from docmorph.settings.schema import DEFAULTS, build_settings
 
         self.settings = settings or build_settings(
             {section: dict(values) for section, values in DEFAULTS.items()}, []
         )
-        self.capabilities = capabilities or detect()
+        # 能力检测是惰性的：构造引擎不再导入 pandas/PyMuPDF 等重型依赖，
+        # 只有真正需要选路时才做完整检测（见 CapabilityProvider）。
+        self.capability_provider = as_provider(capabilities)
+        self.disabled_backends = tuple(disabled_backends)
         self.backends = backends or build_default_backends(self.settings.office_timeout_seconds)
+
+    @property
+    def capabilities(self) -> CapabilityReport:
+        """完整能力报告（首次访问时才执行完整检测）。"""
+        return self.capability_provider.report()
+
+    def active_backends(self) -> dict[str, ConversionBackend]:
+        """当前允许使用的后端（安全模式下会排除 Office 等重型/可选后端）。"""
+        if not self.disabled_backends:
+            return self.backends
+        return {
+            backend_id: backend
+            for backend_id, backend in self.backends.items()
+            if backend_id not in self.disabled_backends
+        }
 
     # ------------------------------------------------------------------ 能力查询
     def declared_targets(self, source: Format) -> list[Format]:
@@ -76,18 +101,33 @@ class ConversionEngine:
     def available_targets(self, source: Format) -> list[Format]:
         """当前环境**真的能跑**的目标格式。"""
         result = []
+        backends = self.active_backends()
         for target in declared_targets(source):
             plan, _ = select_plan(
-                source, target, self.backends, self.capabilities, self.settings.pdf_backend_preference
+                source, target, backends, self.capabilities, self.settings.pdf_backend_preference
             )
             if plan:
                 result.append(target)
         return result
 
     def unavailable_reason(self, source: Format, target: Format) -> str:
-        _, reason = select_plan(
-            source, target, self.backends, self.capabilities, self.settings.pdf_backend_preference
+        plan, reason = select_plan(
+            source,
+            target,
+            self.active_backends(),
+            self.capabilities,
+            self.settings.pdf_backend_preference,
         )
+        if plan is not None:
+            return ""
+        return self._unavailable_reason(target, reason)
+
+    def _unavailable_reason(self, target: Format, reason: str) -> str:
+        """把"没有可用引擎"翻译成用户能照着做的说明。"""
+        if self.disabled_backends:
+            reason = f"{reason}（安全模式已禁用：{'、'.join(self.disabled_backends)}）"
+        if target is Format.PDF:
+            return pdf_output_advice(self.capabilities, reason, self.disabled_backends)
         return reason
 
     # ------------------------------------------------------------------ 主流程
@@ -135,13 +175,13 @@ class ConversionEngine:
         plan, reason = select_plan(
             source_format,
             target_format,
-            self.backends,
+            self.active_backends(),
             self.capabilities,
             self.settings.pdf_backend_preference,
         )
         if plan is None:
             if plans(source_format, target_format):
-                raise BackendUnavailableError("", reason, "")
+                raise BackendUnavailableError("", self._unavailable_reason(target_format, reason), "")
             raise UnsupportedConversionError(source_format.value, target_format.value, reason)
 
         target_path, status = self._resolve_target(request)
@@ -189,7 +229,7 @@ class ConversionEngine:
         options.update(request.options)
         cancel_event = options.get("cancel_event")
         workspace = TempWorkspace(
-            root=self.settings.temp_directory or None,
+            root=self.settings.temp_directory,
             prefix=f"convert-{Path(request.input_path).stem[:24]}",
         )
         warnings: list[str] = []
@@ -331,6 +371,87 @@ class ConversionEngine:
 
     def capability_snapshot(self) -> dict[str, Any]:
         return self.capabilities.as_dict()
+
+    # ------------------------------------------------------------------ PDF 拆分
+    def split_pdf(
+        self,
+        source: Path,
+        output_dir: Path,
+        ranges: str | None = None,
+        conflict: ConflictPolicy = ConflictPolicy.RENAME,
+        progress: Mapping[str, Any] | None = None,
+    ) -> ConversionResult:
+        """按页范围拆分 PDF（每段一个文件；未给范围则每页一个文件）。
+
+        与转换共用冲突策略：默认 ``rename``，绝不覆盖用户已有文件。
+        """
+        from docmorph.backends.python_backend import (
+            extract_pages,
+            parse_page_ranges,
+            pdf_page_count,
+        )
+
+        request = ConversionRequest(
+            input_path=source,
+            output_path=output_dir,
+            source_format=Format.PDF,
+            target_format=Format.PDF,
+            conflict=conflict,
+        )
+        started = time.perf_counter()
+        try:
+            self._validate_input(source)
+            if not self.capabilities.available("pymupdf"):
+                raise BackendUnavailableError("python", "缺少 PyMuPDF，无法拆分 PDF", "请执行 pip install PyMuPDF")
+            total_pages = pdf_page_count(source)
+            planned = parse_page_ranges(ranges, total_pages)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            outputs: list[Path] = []
+            warnings: list[str] = []
+            for index, (start, end) in enumerate(planned, start=1):
+                label = f"{start}" if start == end else f"{start}-{end}"
+                candidate = output_dir / f"{source.stem}_p{label}.pdf"
+                if candidate.exists():
+                    if conflict is ConflictPolicy.SKIP:
+                        warnings.append(f"已跳过（目标已存在）：{candidate.name}")
+                        continue
+                    if conflict is ConflictPolicy.RENAME:
+                        candidate = unique_path(candidate)
+                extract_pages(source, candidate, start, end)
+                outputs.append(candidate)
+                if progress is not None:
+                    callback = progress.get("progress")
+                    if callable(callback):
+                        callback(index, len(planned), "拆分页范围")
+            if not outputs:
+                return ConversionResult(
+                    request=request,
+                    status=ConversionStatus.SKIPPED_EXISTS,
+                    warnings=warnings or ["所有目标文件都已存在，按设置跳过"],
+                    duration_ms=self._elapsed_ms(started),
+                )
+            if len(planned) > 1:
+                warnings.append(f"共拆分为 {len(outputs)} 个文件")
+            return ConversionResult(
+                request=request,
+                status=ConversionStatus.SUCCESS_WITH_WARNINGS if warnings else ConversionStatus.SUCCESS,
+                backend="python",
+                duration_ms=self._elapsed_ms(started),
+                outputs=outputs,
+                warnings=warnings,
+            )
+        except DocMorphError as exc:
+            return self._fail(request, ConversionStatus.FAILED, str(exc), started)
+        except ValueError as exc:  # 页范围语法/越界
+            return self._fail(request, ConversionStatus.INVALID_INPUT, str(exc), started)
+        except Exception as exc:
+            return self._fail(
+                request,
+                ConversionStatus.FAILED,
+                f"拆分失败：{type(exc).__name__}: {exc}",
+                started,
+                traceback.format_exc(),
+            )
 
 
 def unique_path(path: Path) -> Path:

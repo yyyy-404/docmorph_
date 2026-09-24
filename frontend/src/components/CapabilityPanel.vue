@@ -20,10 +20,21 @@ const groups = computed(() => {
 
 <template>
   <div class="card">
-    <h2>系统能力</h2>
+    <div class="row">
+      <h2 class="grow">系统能力</h2>
+      <span v-if="store.capabilityPending" class="tag warn">检测中…</span>
+      <span v-if="store.safeMode" class="tag warn" title="安全模式：只加载内置转换能力">安全模式</span>
+      <button :disabled="store.capabilityPending" @click="store.recheckCapabilities()">重新检测</button>
+    </div>
     <p class="muted intro">
       转换是否可用取决于本机安装了什么。下面是当前环境的实时检测结果——
-      缺少的引擎只会影响对应格式，其它转换仍然可用。
+      缺少的引擎只会影响对应格式，其它转换仍然可用。完整检测在后台进行，不会拖慢启动。
+    </p>
+    <p v-if="store.capabilityPending" class="muted intro">
+      正在后台检测完整能力（Word / WPS / LibreOffice / Pandoc …），完成后会自动刷新。
+    </p>
+    <p v-if="store.capabilities?.warmup_error" class="muted intro warn-text">
+      上次检测未完成：{{ store.capabilities?.warmup_error }}
     </p>
     <div v-for="group in groups" :key="group.kind" class="group">
       <div class="group-title">{{ group.title }}</div>
@@ -44,6 +55,10 @@ const groups = computed(() => {
   font-size: 12px;
   line-height: 1.6;
   margin: 0 0 12px;
+}
+
+.warn-text {
+  color: #8d3b3b;
 }
 
 .group {

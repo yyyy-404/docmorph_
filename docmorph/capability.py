@@ -12,17 +12,37 @@ from __future__ import annotations
 import contextlib
 import ctypes.util
 import importlib
+import importlib.util
 import io
+import logging
 import os
 import shutil
 import sys
+import threading
 import warnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 KIND_PACKAGE = "python-package"
 KIND_APP = "external-app"
 KIND_RUNTIME = "system-runtime"
+
+LOGGER_NAME = "docmorph.capability"
+
+
+@contextlib.contextmanager
+def _quiet_output():
+    """静音第三方库的导入期提示。
+
+    只允许在**主线程**做全局重定向：``contextlib.redirect_*`` 改的是进程级 ``sys.stdout/stderr``，
+    若在后台预热线程里使用，会把同一时刻其它线程（例如 CLI 输出、日志控制台 handler）的输出一起吞掉。
+    """
+    if threading.current_thread() is threading.main_thread():
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            yield
+    else:
+        yield
 
 
 @dataclass(frozen=True)
@@ -83,8 +103,62 @@ class CapabilityReport:
 
 # ---------------------------------------------------------------------- 探测工具
 
-def _module_available(module_name: str) -> str | None:
-    """尝试导入模块，返回版本号字符串；失败返回 ``None``。"""
+#: 模块名 → 发行包名（用于不导入模块就取版本号）
+_DISTRIBUTIONS: dict[str, str] = {
+    "pymupdf": "PyMuPDF",
+    "fitz": "PyMuPDF",
+    "pdf2docx": "pdf2docx",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+    "pandas": "pandas",
+    "openpyxl": "openpyxl",
+    "PIL": "Pillow",
+    "win32com": "pywin32",
+    "webview": "pywebview",
+    "pypandoc": "pypandoc-binary",
+    "weasyprint": "weasyprint",
+}
+
+
+def _module_present(module_name: str) -> bool:
+    """只判断模块是否可导入，**不真的导入**（零重型依赖、零第三方输出）。"""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        # 探测本身失败一律视为"不可用"，绝不向外抛（单项失败不能影响其它能力）
+        return False
+
+
+def _distribution_version(*candidates: str) -> str | None:
+    """通过包元数据取版本（不导入模块）。"""
+    try:
+        from importlib import metadata
+    except ImportError:  # pragma: no cover
+        return None
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            return metadata.version(name)
+        except Exception:
+            continue
+    return None
+
+
+def _module_available(module_name: str, *, deep: bool = False) -> str | None:
+    """探测模块。
+
+    ``deep=False``（默认）：只用 ``find_spec`` + 包元数据判断是否存在并取版本，
+    **不导入模块**——这是启动/选路快且安静的关键（也避免第三方库往 stdout 打印提示）。
+
+    ``deep=True``：真正导入模块以确认可用（可获得最准确的版本），代价是慢且有第三方输出，
+    仅用于用户显式要求的"重新检测 / doctor --deep"。
+    """
+    if not deep:
+        if not _module_present(module_name):
+            return None
+        version = _distribution_version(_DISTRIBUTIONS.get(module_name, ""), module_name)
+        return version or "已安装"
     try:
         module = importlib.import_module(module_name)
     except Exception:
@@ -174,22 +248,36 @@ def _find_office_executable(exe_names: list[str], prog_id: str) -> str | None:
     return None
 
 
-def _weasyprint_usable() -> tuple[bool, str]:
-    """WeasyPrint 需要 GTK/Pango 原生库，仅 import 成功并不代表可用。"""
-    # WeasyPrint 在缺少原生库时会直接往 stderr 打印安装指引，检测时静音处理
+def _gtk_libraries_present() -> bool:
+    """粗查 GTK/Pango 原生库是否存在（不导入 weasyprint）。"""
+    return any(
+        ctypes.util.find_library(library) for library in ("gobject-2.0-0", "libgobject-2.0-0", "pango-1.0-0")
+    )
+
+
+def _weasyprint_usable(*, deep: bool = False) -> tuple[bool, str]:
+    """WeasyPrint 需要 GTK/Pango 原生库，仅"装了包"并不代表可用。
+
+    默认（``deep=False``）：**不导入 weasyprint**，只用 ``find_spec`` + 原生库探测判断，
+    这样既快又不会让 WeasyPrint 往 stdout 打印安装指引（会污染 CLI 的 --json 输出）。
+    ``deep=True``：真正导入并做一次渲染自检（更权威，但慢且有第三方输出）。
+    """
+    if not _module_present("weasyprint"):
+        return False, "未安装"
+    if not _gtk_libraries_present():
+        return False, "已安装，但未检测到 GTK/Pango 运行时"
+    if not deep:
+        return True, "GTK 可用（未做渲染自检）"
+    # 深度模式：真实渲染一次，确认端到端可用
     try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with _quiet_output():
             importlib.import_module("weasyprint")
     except ImportError:
         return False, "未安装"
     except Exception as exc:
         return False, f"已安装但导入失败：{type(exc).__name__}"
-    for library in ("gobject-2.0-0", "libgobject-2.0-0", "pango-1.0-0"):
-        if ctypes.util.find_library(library):
-            return True, "GTK 可用"
-    # find_library 在 Windows 上常查不到，做一次真实渲染验证
     try:
-        with contextlib.redirect_stderr(io.StringIO()):
+        with _quiet_output():
             from weasyprint import HTML
 
             pdf = HTML(string="<p>ok</p>").write_pdf()
@@ -219,16 +307,31 @@ def _webview2_version() -> str | None:
     return None
 
 
-def _pymupdf_version() -> str | None:
+def _pymupdf_version(*, deep: bool = False) -> str | None:
     """PyMuPDF 的历史导入名是 ``fitz``，新版也提供 ``pymupdf``。"""
     for module_name in ("pymupdf", "fitz"):
-        version = _module_available(module_name)
+        version = _module_available(module_name, deep=deep)
         if version is not None:
             return version
     return None
 
 
-def _pandoc_version() -> str | None:
+def _pandoc_binary_present() -> bool:
+    """pypandoc 随包提供 pandoc 二进制，检查它是否就位（不导入 pypandoc）。"""
+    spec = None
+    try:
+        spec = importlib.util.find_spec("pypandoc")
+    except (ImportError, ValueError):
+        return False
+    if spec is None or not spec.origin:
+        return False
+    binary = Path(spec.origin).parent / "files" / "pandoc.exe"
+    return binary.is_file() or (Path(spec.origin).parent / "files").is_dir()
+
+
+def _pandoc_version(*, deep: bool = False) -> str | None:
+    if not deep:
+        return "已随 pypandoc 提供" if _pandoc_binary_present() else None
     try:
         import pypandoc
 
@@ -240,30 +343,56 @@ def _pandoc_version() -> str | None:
 # ---------------------------------------------------------------------- 检测
 
 _CACHE: CapabilityReport | None = None
+_DEEP_CACHE: CapabilityReport | None = None
 
 
-def detect(force: bool = False) -> CapabilityReport:
-    """检测并缓存当前环境能力。"""
-    global _CACHE
-    if _CACHE is not None and not force:
-        return _CACHE
+def detect(force: bool = False, *, full: bool = True, deep: bool = False) -> CapabilityReport:
+    """检测并缓存当前环境能力。
+
+    :param full: ``True`` 检测全部能力项；``False`` 只做启动所需的轻量检查（WebView2 / Python）。
+    :param deep: ``True`` 时**真正导入**各依赖做权威自检（慢、会产生第三方输出），
+        仅用于用户显式要求（系统能力页的"重新检测"、``doctor --deep``）；
+        默认 ``False`` 时只用模块存在性 + 包元数据判断，**零重型导入**：
+        这样启动与选路都快，也不会把库的提示信息打到 stdout 上（避免污染 CLI 的 --json）。
+    """
+    if not full:
+        return startup_report(force=force)
+    global _CACHE, _DEEP_CACHE
+    cached = _DEEP_CACHE if deep else _CACHE
+    if cached is not None and not force:
+        return cached
 
     report = CapabilityReport()
-    # 部分第三方库在导入期就往 stderr 写弃用/安装提示（PyMuPDF 的 fitz 别名、
-    # WeasyPrint 的 GTK 指引），检测过程对用户无意义，这里静音处理。
-    with warnings.catch_warnings(), contextlib.redirect_stdout(
-        io.StringIO()
-    ), contextlib.redirect_stderr(io.StringIO()):
+    # 深度检测会真实导入第三方库，它们可能往 stdout/stderr 写提示，这里静音处理
+    with warnings.catch_warnings(), _quiet_output():
         warnings.simplefilter("ignore")
-        _detect_into(report)
-    _CACHE = report
+        try:
+            _detect_into(report, deep=deep)
+        except Exception as exc:
+            logging.getLogger(LOGGER_NAME).warning("能力检测整体失败", exc_info=True)
+            report = startup_report(force=True)
+            report.add(
+                Capability(
+                    "diagnostics",
+                    "能力检测异常",
+                    KIND_RUNTIME,
+                    False,
+                    f"{type(exc).__name__}: {exc}",
+                    "可在“系统能力”页重新检测；单项检测失败不会影响其它转换能力",
+                )
+            )
+    if deep:
+        _DEEP_CACHE = report
+        _CACHE = report  # 深度结果更权威，直接作为默认缓存
+    else:
+        _CACHE = report
     return report
 
 
-def _detect_into(report: CapabilityReport) -> None:
+def _detect_into(report: CapabilityReport, *, deep: bool = False) -> None:
     """执行实际检测并写入 ``report``。"""
 
-    pymupdf_version = _pymupdf_version()
+    pymupdf_version = _pymupdf_version(deep=deep)
     report.add(
         Capability(
             "pymupdf",
@@ -285,7 +414,7 @@ def _detect_into(report: CapabilityReport) -> None:
         ("win32com", "pywin32（Office 自动化）"),
         ("webview", "pywebview（桌面窗口）"),
     ):
-        version = _module_available(module)
+        version = _module_available(module, deep=deep)
         report.add(
             Capability(
                 module,
@@ -297,7 +426,7 @@ def _detect_into(report: CapabilityReport) -> None:
             )
         )
 
-    pandoc_version = _pandoc_version()
+    pandoc_version = _pandoc_version(deep=deep)
     report.add(
         Capability(
             "pandoc",
@@ -309,7 +438,7 @@ def _detect_into(report: CapabilityReport) -> None:
         )
     )
 
-    usable, detail = _weasyprint_usable()
+    usable, detail = _weasyprint_usable(deep=deep)
     report.add(
         Capability(
             "weasyprint",
@@ -390,3 +519,225 @@ def _detect_into(report: CapabilityReport) -> None:
             "图形界面需要它；缺失时可安装 Microsoft Edge WebView2 Runtime，命令行不受影响",
         )
     )
+
+
+# ---------------------------------------------------------------------- 启动轻量检测
+# 启动阶段只回答一个问题："窗口能不能起来？"
+# 因此这里只做**零重型导入**的检查（读注册表 / 查文件），完整检测推迟到按需或后台预热。
+
+
+@dataclass(frozen=True)
+class StartupProbe:
+    """启动阶段的一项轻量检查。"""
+
+    id: str
+    label: str
+    kind: str
+    run: Callable[[], tuple[bool, str]]
+    hint: str = ""
+
+
+def _probe_python_runtime() -> tuple[bool, str]:
+    frozen = "（打包运行）" if getattr(sys, "frozen", False) else ""
+    return True, f"Python {sys.version.split()[0]}{frozen}"
+
+
+def _probe_webview2_runtime() -> tuple[bool, str]:
+    version = _webview2_version()
+    return bool(version), f"版本 {version}" if version else "未检测到"
+
+
+STARTUP_PROBES: tuple[StartupProbe, ...] = (
+    StartupProbe(
+        "webview2",
+        "Edge WebView2 运行时",
+        KIND_RUNTIME,
+        _probe_webview2_runtime,
+        "图形界面需要它；可安装 Microsoft Edge WebView2 Runtime，命令行不受影响",
+    ),
+    StartupProbe("python", "Python 运行时", KIND_RUNTIME, _probe_python_runtime),
+)
+
+_STARTUP_CACHE: CapabilityReport | None = None
+
+
+def startup_report(force: bool = False) -> CapabilityReport:
+    """启动阶段使用的轻量报告：**不导入任何重型依赖**。
+
+    单项检查异常只会把该项标记为不可用，不会向外抛。
+    """
+    global _STARTUP_CACHE
+    if _STARTUP_CACHE is not None and not force:
+        return _STARTUP_CACHE
+    report = CapabilityReport()
+    for probe in STARTUP_PROBES:
+        try:
+            available, detail = probe.run()
+        except Exception as exc:
+            available, detail = False, f"检测失败：{type(exc).__name__}: {exc}"
+        report.add(
+            Capability(
+                probe.id,
+                probe.label,
+                probe.kind,
+                bool(available),
+                str(detail),
+                "" if available else probe.hint,
+            )
+        )
+    _STARTUP_CACHE = report
+    return report
+
+
+def startup_probe_ids() -> list[str]:
+    """启动阶段会执行的检查项 id。"""
+    return [probe.id for probe in STARTUP_PROBES]
+
+
+class CapabilityProvider:
+    """惰性能力提供者（GUI/CLI/引擎共用）。
+
+    * 启动阶段只调用 :meth:`startup`（零重型导入），窗口先起来；
+    * 完整检测由 :meth:`report` 按需触发，或由 :meth:`warmup` 在后台线程预热；
+    * 内部缓存 + 锁，保证多线程只检测一次。
+    """
+
+    def __init__(self) -> None:
+        self._full: CapabilityReport | None = None
+        self._lock = threading.RLock()
+        self._thread: threading.Thread | None = None
+        self._warmup_error: str = ""
+        self._deep_done = False
+
+    # ------------------------------------------------------------------ 查询
+    @property
+    def loaded(self) -> bool:
+        with self._lock:
+            return self._full is not None
+
+    @property
+    def warmup_error(self) -> str:
+        with self._lock:
+            return self._warmup_error
+
+    def startup(self) -> CapabilityReport:
+        with self._lock:
+            if self._full is not None:
+                return self._full
+        return startup_report()
+
+    @property
+    def deep_done(self) -> bool:
+        """是否已经做过一次深度（真实导入）自检。"""
+        with self._lock:
+            return self._deep_done
+
+    def report(self, force: bool = False) -> CapabilityReport:
+        """完整报告（首次调用会执行完整检测）。"""
+        with self._lock:
+            if self._full is not None and not force:
+                return self._full
+        return self.refresh()
+
+    def refresh(self, deep: bool = False) -> CapabilityReport:
+        """重新检测。``deep=True`` 会真实导入依赖做权威自检（较慢、有第三方输出）。"""
+        report = detect(force=True, deep=deep)
+        with self._lock:
+            self._full = report
+            if deep:
+                self._deep_done = True
+        return report
+
+    # ------------------------------------------------------------------ 预热
+    def warmup(self, on_ready: Callable[[CapabilityReport], None] | None = None) -> bool:
+        """后台线程执行完整检测；返回是否新启动了线程（已在跑则返回 False）。"""
+        with self._lock:
+            if self._full is not None:
+                return False
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            thread = threading.Thread(
+                target=self._warmup_worker,
+                args=(on_ready,),
+                name="docmorph-capability",
+                daemon=True,
+            )
+            self._thread = thread
+        thread.start()
+        return True
+
+    def _warmup_worker(self, on_ready: Callable[[CapabilityReport], None] | None) -> None:
+        try:
+            report = self.refresh()
+        except Exception as exc:
+            with self._lock:
+                self._warmup_error = f"{type(exc).__name__}: {exc}"
+            logging.getLogger(LOGGER_NAME).warning("后台能力检测失败", exc_info=True)
+            return
+        if on_ready is not None:
+            try:
+                on_ready(report)
+            except Exception:
+                logging.getLogger(LOGGER_NAME).warning("能力检测回调失败", exc_info=True)
+
+
+def iter_capability_ids() -> Iterable[str]:
+    """已知的能力项 id（含外部软件与 Python 包），供 UI/测试遍历。"""
+    return (
+        "webview2",
+        "python",
+        "pymupdf",
+        "pdf2docx",
+        "docx",
+        "pptx",
+        "pandas",
+        "openpyxl",
+        "PIL",
+        "pandoc",
+        "win32com",
+        "weasyprint",
+        "word",
+        "excel",
+        "powerpoint",
+        "wps",
+        "libreoffice",
+        "webview",
+    )
+
+
+class FrozenProvider:
+    """把一个既有报告包装成 provider（测试、CLI 单次运行、指定环境时使用）。"""
+
+    def __init__(self, report: CapabilityReport) -> None:
+        self._report = report
+
+    @property
+    def loaded(self) -> bool:
+        return True
+
+    @property
+    def warmup_error(self) -> str:
+        return ""
+
+    def startup(self) -> CapabilityReport:
+        return self._report
+
+    def report(self, force: bool = False) -> CapabilityReport:
+        return self._report
+
+    def refresh(self) -> CapabilityReport:
+        return self._report
+
+    def warmup(self, on_ready: Callable[[CapabilityReport], None] | None = None) -> bool:
+        return False
+
+
+def as_provider(source: object | None) -> CapabilityProvider | FrozenProvider:
+    """把 ``None`` / ``CapabilityReport`` / provider 统一成 provider。"""
+    if source is None:
+        return CapabilityProvider()
+    if isinstance(source, (CapabilityProvider, FrozenProvider)):
+        return source
+    if isinstance(source, CapabilityReport):
+        return FrozenProvider(source)
+    raise TypeError(f"不支持的能力来源类型：{type(source).__name__}")

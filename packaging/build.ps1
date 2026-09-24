@@ -1,30 +1,51 @@
-# 用 PyInstaller 构建 Windows 发行版（onedir，启动快、对 Office COM 与 WebView2 友好）。
+# Build Windows distribution with PyInstaller (onedir).
 #
-# 用法（在项目根目录执行）：
-#   .\.venv\Scripts\python.exe -m pip install pyinstaller
+# Usage (from project root, clean venv recommended):
+#   python -m venv .venv-build
+#   .\.venv-build\Scripts\activate
+#   pip install -r requirements-full.txt
+#   pip install pyinstaller
 #   powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 #
-# 产物：dist\DocMorph\（绿色目录）与 dist\DocMorphCLI\（命令行版）
+# Optional: -PythonPath <path\to\python.exe>
+# Default probe order: .venv-build, .venv, then PATH python.
+#
+# Output: dist\DocMorph\ and dist\DocMorphCLI\
+
+param(
+    [string]$PythonPath = ""
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
 
-$python = Join-Path $root ".venv\Scripts\python.exe"
-if (-not (Test-Path $python)) { $python = "python" }
+if (-not $PythonPath) {
+    foreach ($candidate in @(".venv-build\Scripts\python.exe", ".venv\Scripts\python.exe")) {
+        $full = Join-Path $root $candidate
+        if (Test-Path $full) { $PythonPath = $full; break }
+    }
+}
+if (-not $PythonPath) { $PythonPath = "python" }
+
+Write-Host "Python: $PythonPath" -ForegroundColor Cyan
+
+$pypandocFiles = & $PythonPath -c "import pypandoc, pathlib; print(pathlib.Path(pypandoc.__file__).resolve().parent / 'files')"
+if ($LASTEXITCODE -ne 0 -or -not $pypandocFiles -or -not (Test-Path $pypandocFiles)) {
+    throw "Cannot locate pypandoc/files (pip install -r requirements-full.txt first)"
+}
 
 $common = @(
     "--noconfirm", "--clean", "--onedir",
-    # 注意：--specpath 会让相对的 --add-data 源路径按 spec 目录解析，因此这里必须用绝对路径
+    # --specpath makes relative --add-data sources resolve against spec dir; use absolute paths
     "--add-data", "$root\docmorph\ui\webapp;docmorph/ui/webapp",
     "--add-data", "$root\docmorph\resources;docmorph/resources",
-    "--add-data", "$root\.venv\Lib\site-packages\pypandoc\files;pypandoc/files",
+    "--add-data", "$pypandocFiles;pypandoc/files",
     "--collect-all", "pymupdf",
     "--collect-all", "pdf2docx",
     "--collect-all", "webview",
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",
-    # 与运行时无关的重型模块，排除以缩小发行体积
     "--exclude-module", "tkinter",
     "--exclude-module", "matplotlib",
     "--exclude-module", "pytest",
@@ -33,10 +54,16 @@ $common = @(
     "--specpath", "build"
 )
 
-Write-Host "== 构建 GUI 版 ==" -ForegroundColor Cyan
-& $python -m PyInstaller @common --windowed --name DocMorph --icon "$root\docmorph\resources\icon.ico" packaging/DocMorph.py
+Write-Host "== Build GUI ==" -ForegroundColor Cyan
+& $PythonPath -m PyInstaller @common --windowed --name DocMorph --icon "$root\docmorph\resources\icon.ico" packaging/DocMorph.py
+if ($LASTEXITCODE -ne 0) { throw "GUI build failed" }
 
-Write-Host "== 构建 CLI 版 ==" -ForegroundColor Cyan
-& $python -m PyInstaller @common --console --name DocMorphCLI packaging/DocMorphCLI.py
+Write-Host "== Build CLI ==" -ForegroundColor Cyan
+& $PythonPath -m PyInstaller @common --console --name DocMorphCLI packaging/DocMorphCLI.py
+if ($LASTEXITCODE -ne 0) { throw "CLI build failed" }
 
-Write-Host "完成：dist\DocMorph\DocMorph.exe 与 dist\DocMorphCLI\DocMorphCLI.exe" -ForegroundColor Green
+$gui = Join-Path $root "dist\DocMorph\DocMorph.exe"
+$cli = Join-Path $root "dist\DocMorphCLI\DocMorphCLI.exe"
+if (-not (Test-Path $gui)) { throw "Missing $gui" }
+if (-not (Test-Path $cli)) { throw "Missing $cli" }
+Write-Host "Done: dist\DocMorph\DocMorph.exe and dist\DocMorphCLI\DocMorphCLI.exe" -ForegroundColor Green

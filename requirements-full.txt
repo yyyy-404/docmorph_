@@ -1,0 +1,13 @@
+﻿# DocMorph Full 功能运行依赖
+#
+# 在 Slim 运行依赖之上，补齐项目正式支持的可选能力（当前仅 WeasyPrint HTML→PDF 兜底）。
+# 不包含：测试 / 静态检查 / 打包工具（PyInstaller 由维护者构建时单独安装）。
+#
+# Windows 上 WeasyPrint 仍需系统 GTK/Pango 才能真正渲染；
+# 缺 GTK 时程序会判为不可用并自动降级，不影响其它转换。
+#
+# 平台与 Slim 相同（见 README「两种使用方式」）。
+
+-r requirements.txt
+
+weasyprint>=60

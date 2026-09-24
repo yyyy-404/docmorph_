@@ -93,3 +93,18 @@ def human_size(path: Path) -> str:
             return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
         value /= 1024
     return f"{value:.1f}GB"
+
+
+def report_progress(options: Mapping[str, Any], done: int, total: int, label: str = "") -> None:
+    """向调用方报告**页级**进度（可选能力，失败静默忽略）。
+
+    后端只需在能拿到"第几页/共几页"时调用它；不支持页级进度的后端不必实现，
+    调用方（JobRunner / GUI）会自动退化为文件级进度。
+    """
+    callback = options.get("progress")
+    if callback is None:
+        return
+    try:
+        callback(done, total, label)
+    except Exception:
+        return

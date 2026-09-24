@@ -9,6 +9,7 @@ import type {
   AppState,
   CapabilityPayload,
   OperationResult,
+  PdfTaskPayload,
   SelectionPayload,
   SourceEntry,
   StartPayload,
@@ -18,6 +19,7 @@ export interface PywebviewApi {
   get_state(): Promise<AppState>
   get_catalog(): Promise<SourceEntry[]>
   get_capabilities(): Promise<CapabilityPayload>
+  recheck_capabilities(): Promise<CapabilityPayload>
   get_logs(limit?: number): Promise<string[]>
   select_files(): Promise<SelectionPayload>
   select_folder(): Promise<SelectionPayload>
@@ -25,6 +27,13 @@ export interface PywebviewApi {
   set_selection(payload: { files?: string[]; directory?: string }): Promise<SelectionPayload>
   start_conversion(payload: StartPayload): Promise<OperationResult>
   cancel_conversion(): Promise<OperationResult>
+  merge_pdfs(payload: { inputs: string[]; output?: string }): Promise<PdfTaskPayload>
+  split_pdf(payload: {
+    input: string
+    pages?: string
+    output_directory?: string
+    conflict_policy?: string
+  }): Promise<PdfTaskPayload>
   save_settings(payload: Record<string, unknown>): Promise<OperationResult>
   open_path(path: string): Promise<OperationResult>
   reveal_output(): Promise<OperationResult>
@@ -76,6 +85,7 @@ export const api = {
   getState: () => call('get_state'),
   getCatalog: () => call('get_catalog'),
   getCapabilities: () => call('get_capabilities'),
+  recheckCapabilities: () => call('recheck_capabilities'),
   getLogs: (limit = 300) => call('get_logs', limit),
   selectFiles: () => call('select_files'),
   selectFolder: () => call('select_folder'),
@@ -84,6 +94,13 @@ export const api = {
     call('set_selection', payload),
   startConversion: (payload: StartPayload) => call('start_conversion', payload),
   cancelConversion: () => call('cancel_conversion'),
+  mergePdfs: (payload: { inputs: string[]; output?: string }) => call('merge_pdfs', payload),
+  splitPdf: (payload: {
+    input: string
+    pages?: string
+    output_directory?: string
+    conflict_policy?: string
+  }) => call('split_pdf', payload),
   saveSettings: (payload: Record<string, unknown>) => call('save_settings', payload),
   openPath: (path: string) => call('open_path', path),
   revealOutput: () => call('reveal_output'),

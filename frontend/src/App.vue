@@ -8,16 +8,18 @@ import FileDropZone from '@/components/FileDropZone.vue'
 import FileList from '@/components/FileList.vue'
 import FormatSelector from '@/components/FormatSelector.vue'
 import LogPanel from '@/components/LogPanel.vue'
+import PdfToolsPanel from '@/components/PdfToolsPanel.vue'
 import ProgressPanel from '@/components/ProgressPanel.vue'
 import ResultPanel from '@/components/ResultPanel.vue'
 import SettingsPanel from '@/components/SettingsPanel.vue'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
-const tab = ref<'convert' | 'logs' | 'capabilities' | 'settings'>('convert')
+const tab = ref<'convert' | 'pdf' | 'logs' | 'capabilities' | 'settings'>('convert')
 
 const tabs = [
   { id: 'convert', label: '转换' },
+  { id: 'pdf', label: 'PDF 工具' },
   { id: 'logs', label: '日志' },
   { id: 'capabilities', label: '系统能力' },
   { id: 'settings', label: '设置' },
@@ -25,6 +27,22 @@ const tabs = [
 
 const canStart = computed(() => store.selectedCount > 0 && !store.busy)
 const messageClass = computed(() => `banner ${store.messageKind}`)
+const dragging = ref(false)
+
+/** 整窗拖拽反馈：真实路径由 Python 侧的 DOM drop 事件解析（WebView2 不向 JS 暴露路径）。 */
+function onWindowDragOver(event: DragEvent) {
+  event.preventDefault()
+  dragging.value = true
+}
+
+function onWindowDragLeave(event: DragEvent) {
+  if (event.relatedTarget === null) dragging.value = false
+}
+
+function onWindowDrop(event: DragEvent) {
+  event.preventDefault()
+  dragging.value = false
+}
 
 onMounted(() => {
   void store.init()
@@ -36,7 +54,15 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <div
+    class="shell"
+    @dragover="onWindowDragOver"
+    @dragleave="onWindowDragLeave"
+    @drop="onWindowDrop"
+  >
+    <div v-if="dragging" class="drag-overlay">
+      <div class="drag-card">松开即可添加文件</div>
+    </div>
     <header class="head">
       <div class="row title-row">
         <div class="title grow">
@@ -63,6 +89,13 @@ onMounted(() => {
 
     <div v-if="store.message" :class="messageClass" @click="store.message = ''">
       {{ store.message }}
+    </div>
+    <div v-if="store.safeMode" class="banner safe">
+      安全模式：仅加载内置转换能力（Pandoc / 纯 Python）。Office、WPS、LibreOffice、WeasyPrint 已临时禁用。
+      <a href="#" @click.prevent="store.recheckCapabilities()">重新检测</a>
+    </div>
+    <div v-else-if="store.capabilityPending" class="banner">
+      正在后台检测可用转换引擎…（可直接开始转换，检测完成会自动刷新可用格式）
     </div>
 
     <main class="body scroll">
@@ -91,6 +124,18 @@ onMounted(() => {
               <input type="text" class="grow" :value="store.state.output_directory" readonly />
               <button :disabled="store.busy" @click="store.pickOutput()">浏览…</button>
             </div>
+            <div v-if="store.presets.length" class="presets">
+              <span class="label">最近使用</span>
+              <button
+                v-for="preset in store.presets"
+                :key="`${preset.source}-${preset.target}`"
+                class="ghost preset"
+                :title="`切换为 ${preset.source} → ${preset.target}`"
+                @click="store.applyPreset(preset)"
+              >
+                {{ preset.source }} → {{ preset.target }}
+              </button>
+            </div>
             <div class="spacer" />
             <FormatSelector />
           </div>
@@ -114,6 +159,10 @@ onMounted(() => {
       </div>
 
       <!-- ------------------------------------------------------------ 日志 -->
+      <div v-else-if="tab === 'pdf'" class="single">
+        <PdfToolsPanel />
+      </div>
+
       <div v-else-if="tab === 'logs'" class="single">
         <LogPanel />
       </div>
@@ -219,6 +268,54 @@ onMounted(() => {
   background: var(--dm-mist);
   border-color: #a7cde6;
   color: #1f4a66;
+}
+
+.banner.safe {
+  background: var(--dm-sand);
+  border-color: #e8cfa8;
+  color: #7a5316;
+}
+
+.drag-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(140, 192, 235, 0.18);
+  border: 2px dashed var(--dm-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.drag-card {
+  background: var(--dm-card-strong);
+  border-radius: var(--dm-radius);
+  padding: 14px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dm-accent-ink);
+  box-shadow: var(--dm-shadow);
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.preset {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border-color: var(--dm-border-soft);
+}
+
+.banner a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 .body {

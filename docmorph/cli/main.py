@@ -28,6 +28,7 @@ from docmorph.formats import parse_format
 from docmorph.results import ConflictPolicy
 from docmorph.services import ApplicationService
 from docmorph.settings import ConfigManager
+from docmorph.startup import safe_mode_requested, strip_safe_mode_flags
 from docmorph.utils import ensure_console_encoding
 
 _PROG = "docmorph"
@@ -92,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # doctor
     doctor = subparsers.add_parser("doctor", help="检测运行环境与可用转换引擎")
+    doctor.add_argument(
+        "--deep",
+        action="store_true",
+        help="真实导入依赖做权威自检（较慢，可能触发第三方库输出）",
+    )
     _add_common(doctor)
 
     # config
@@ -105,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("output", help="输出的 PDF 路径")
     merge.add_argument("inputs", nargs="+", help="待合并的 PDF 文件")
     _add_common(merge)
+
+    # split-pdf
+    split = subparsers.add_parser("split-pdf", help="按页范围拆分 PDF")
+    split.add_argument("input", help="输入 PDF")
+    split.add_argument("-o", "--output", default=None, help="输出目录（默认取配置的输出目录）")
+    split.add_argument("--pages", default=None, help="页范围，如 1-3,5,7-9；留空表示每页一个文件")
+    _add_conflict(split)
+    _add_common(split)
 
     # 兼容旧语法：docmorph <输入> [输出] [--from X] [--to Y] [--batch]
     legacy = subparsers.add_parser("legacy", help=argparse.SUPPRESS)
@@ -136,7 +150,11 @@ def _conflict_from_args(args: argparse.Namespace) -> ConflictPolicy | None:
 
 def _service(args: argparse.Namespace, enable_file_log: bool = True) -> ApplicationService:
     config = ConfigManager.load(args.config)
-    return ApplicationService(config=config, enable_file_log=enable_file_log)
+    return ApplicationService(
+        config=config,
+        enable_file_log=enable_file_log,
+        safe_mode=safe_mode_requested(),
+    )
 
 
 def _print(text: str = "") -> None:
@@ -253,6 +271,10 @@ def cmd_formats(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     service = _service(args, enable_file_log=False)
     try:
+        if getattr(args, "deep", False):
+            if not args.json:
+                _print("🔍 正在做深度自检（会真实导入各依赖，可能需要几秒）…")
+            service.deep_recheck_capabilities()
         payload = service.doctor()
         if args.json:
             _print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -311,6 +333,30 @@ def cmd_merge_pdf(args: argparse.Namespace) -> int:
     service = _service(args)
     try:
         result = service.merge_pdfs(args.inputs, args.output)
+        return _report_results([result], args)
+    finally:
+        service.shutdown()
+
+
+def cmd_split_pdf(args: argparse.Namespace) -> int:
+    service = _service(args)
+    try:
+        source = Path(args.input)
+        if not source.exists():
+            _print(f"❌ 输入文件不存在：{source}")
+            return EXIT_USAGE
+        output_dir = Path(args.output) if args.output else Path(service.settings.output_directory)
+        if not args.json:
+            _print(f"✂️ 拆分 {source.name} → {output_dir}（页范围：{args.pages or '每页一个文件'}）")
+        result = service.split_pdf(
+            source, output_dir, ranges=args.pages, conflict=_conflict_from_args(args)
+        )
+        if result.ok and not args.json:
+            _print(f"✅ 已生成 {len(result.outputs)} 个文件：")
+            for path in result.outputs[:20]:
+                _print(f"   {path.name}")
+            if len(result.outputs) > 20:
+                _print(f"   …另有 {len(result.outputs) - 20} 个文件")
         return _report_results([result], args)
     finally:
         service.shutdown()
@@ -442,7 +488,7 @@ def _report_batch(outcome, args: argparse.Namespace) -> int:
 def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
     """未给出子命令时，按旧语法解析（保持向后兼容）。"""
     items = list(sys.argv[1:] if argv is None else argv)
-    known = set(_SUBCOMMANDS) | {"legacy", "-h", "--help", "--version"}
+    known = set(_SUBCOMMANDS) | {"legacy", "split-pdf", "-h", "--help", "--version"}
     for item in items:
         if item == "--":
             break
@@ -456,8 +502,16 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ensure_console_encoding()
+    # 安全模式：在参数解析之前摘掉标记，并通过环境变量传给服务层
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if safe_mode_requested(raw):
+        os.environ["DOCMORPH_SAFE_MODE"] = "1"
+    raw = strip_safe_mode_flags(raw)
     parser = build_parser()
-    args = parser.parse_args(_normalize_argv(argv))
+    args = parser.parse_args(_normalize_argv(raw))
+    if args.command is None:
+        parser.print_help()
+        return EXIT_USAGE
     handler = {
         "convert": cmd_convert,
         "batch": cmd_batch,
@@ -465,6 +519,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "doctor": cmd_doctor,
         "config": cmd_config,
         "merge-pdf": cmd_merge_pdf,
+        "split-pdf": cmd_split_pdf,
         "legacy": cmd_legacy,
     }.get(args.command)
     if handler is None:

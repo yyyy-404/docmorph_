@@ -1,24 +1,25 @@
-# DocMorph 转换能力矩阵（第三阶段）
+# DocMorph 转换能力矩阵
 
-> **本矩阵的每一行都经过本机实测**（Windows 11 + Python 3.13.15 + 本仓库 `.venv`）。
-> 实测脚本对产物做了内容质检（中文字符、页数、表格/图片是否保留），而不只看"文件是否生成"。
-> 图例：**✔ 实测通过** ｜ **△ 实测通过但有明确损失** ｜ **✖ 实测不可用** ｜ **— 不适用**
+> **矩阵与路由定义**以 `docmorph/registry.py` 为准；本文件描述产品支持的转换能力、后端分工，以及文档编写时在**构建机**上的实测结论。
+>
+> **产品理论支持** ≠ **每台用户机器都可用**：Word / Excel / WPS / LibreOffice / GTK 属于环境条件，请以本机 `docmorph doctor` 为准。
+>
+> 图例：**✔ 已验证可用** ｜ **△ 可用但有明确损失** ｜ **✖ 不支持** ｜ **— 不适用**
+>
+> 下方「本机基线」记录的是**验证环境快照**，不是对所有用户的承诺。
 
-## 0. 本机外部软件实测基线
+## 0. 验证环境基线（构建机快照，非普适）
 
-| 外部组件 | 状态 | 证据 |
+| 外部组件 | 该验证机状态 | 说明 |
 |---|---|---|
-| Microsoft Word | **可用** | `Office16\WINWORD.EXE`；COM `Word.Application` 注册；docx→pdf 实测成功 |
-| Microsoft Excel | **可用** | `Office16\EXCEL.EXE`；COM `Excel.Application` 注册 |
-| Microsoft PowerPoint | **不可用** | `POWERPOINT.EXE` 不存在（仅残留 ProgID 注册项） |
-| WPS Office | **未安装** | `KWPS/WPS/ET/WPP.Application` 均未注册 |
-| LibreOffice | **未安装** | PATH 与两个标准安装目录均无 `soffice.exe` |
-| Pandoc | **可用（随包）** | `pypandoc-binary 1.17` 自带 pandoc 二进制，`get_pandoc_version()` 正常 |
-| WeasyPrint | **不可用** | `weasyprint 70` → `OSError: cannot load library 'libgobject-2.0-0'`（缺 GTK/Pango） |
-| 其他 pandoc PDF 引擎 | **全部不可用** | `weasyprint/wkhtmltopdf/pdflatex/xelatex/tectonic/typst/prince/context/pdfroff` 均不在 PATH |
-| poppler（pdf2image 用） | 仅存在于 Codex 运行时 PATH | 普通用户机器需另行安装 → **新架构改用 PyMuPDF，去掉该依赖** |
-| Edge WebView2 运行时 | **可用** | 注册表 `pv = 153.0.4234.48` |
-| Edge headless 打印 PDF | **不可用** | 已有 Edge 进程导致 `--print-to-pdf` 被转发丢弃（rc=0 但无输出），不作为方案 |
+| Microsoft Word | 可用 | `Office16\WINWORD.EXE`；用户机器未装则该路由不可用 |
+| Microsoft Excel | 可用 | `Office16\EXCEL.EXE`；用户机器未装则该路由不可用 |
+| Microsoft PowerPoint | 不可用 | 仅残留 ProgID；与 PPTX 不作输入一致 |
+| WPS Office | 未安装 | 可选替代，装了才会参与路由 |
+| LibreOffice | 未安装 | 可选兜底，装了才会参与路由 |
+| Pandoc | 可用（随包） | `pypandoc-binary` 自带，Slim/Full 均具备 |
+| WeasyPrint | 不可用 | 缺 GTK/Pango；Full 已含 Python 包，仍需系统 GTK |
+| Edge WebView2 | 可用 | GUI 必需；Win11/新版 Win10 通常已内置 |
 
 ## 1. 设计原则
 
@@ -46,7 +47,9 @@
 > 说明：`PPTX` 作为**源**格式在本版本不支持（解析渲染需 PowerPoint COM，本机不可用且受众有限）；
 > 矩阵中不声明，UI 中不展示为可转换源。`PDF→XLSX / DOCX→XLSX / MD→XLSX / HTML→XLSX` 同理不声明。
 
-## 3. 逐条实测记录（本轮真实执行）
+## 3. 构建机验证记录（示例，非所有用户环境保证）
+
+> 下表为文档编写时在**验证机**上的抽样结果；其它机器因 Office/GTK 是否安装而异。
 
 | 路由 | 后端 | 耗时 | 产物 | 质检结果 |
 |---|---|---|---|---|
@@ -68,24 +71,11 @@
 | txt→docx | pandoc（markdown 读取器） | 4.81s（含转 PDF） | 10.5 KB | 中文保留 ✔ |
 | xlsx→csv（仅首个 sheet） | pandas+openpyxl | 0.05s | 36 B | **丢失第 2 个 sheet** |
 | xlsx→csv（合并全部 sheet） | pandas+openpyxl | — | — | 含"第二张表" ✔ |
-| pdf→txt | PyPDF2 | — | 87 字符, 1 页 | 中文保留 ✔ |
+| pdf→txt | PyMuPDF | — | 中文保留 ✔ |
 | pdf→docx | pdf2docx | — | 38 KB, 4 段 | 中文与段落保留 ✔ |
-| pdf→pptx | PyMuPDF/pdf2image + python-pptx | ~2s/页 | 1 页幻灯片 | **无文本层（`has_text=False`）→ 标 △** |
+| pdf→pptx | PyMuPDF + python-pptx | ~2s/页 | 1 页幻灯片 | **无文本层（`has_text=False`）→ 标 △** |
 
-### 3.1 实测暴露、必须修复的问题
-
-| 编号 | 问题 | 影响 | 修复方式 |
-|---|---|---|---|
-| M1 | pandoc **没有 `txt` 目标格式**，正确输出格式是 `plain` | `docx→txt`、`html→txt` 当前**必然失败** | 引擎内做格式别名映射 `txt → plain` |
-| M2 | 默认 `pdf_engine = weasyprint` 在本机**完全不可用**（缺 GTK），且 pandoc 也找不到 weasyprint CLI | `md→pdf`、`html→pdf` 当前**必然失败** | 默认改走 Word COM；WeasyPrint 降级为"检测到 GTK 才启用"的可选后端 |
-| M3 | `xlsx→csv` 只导出第一个 sheet | 多 sheet 数据**静默丢失** | 默认导出全部 sheet（分文件 + 合并模式），并在结果中给出 warning |
-| M4 | `pdf→pptx` 产物为纯图片 | 用户拿到**不可编辑**的 PPT | 保持图片策略，但把 PDF 提取文本写入**演讲者备注**，并在结果中标注 warning |
-| M5 | `pdf2image` 依赖 poppler（普通用户机器没有） | 普通用户 `pdf→pptx` 失败 | 改用 PyMuPDF 渲染页面，移除 poppler 依赖 |
-| M6 | `docx2pdf` 要求 `>=0.1.16`，该版本不存在 | **干净环境无法 pip install** | 锁定可用版本并在新依赖清单中修正 |
-| M7 | `xlsx` 读取隐式依赖 `openpyxl`，但清单里没有 | 干净环境 `xlsx→csv` 失败 | 显式加入 `openpyxl` |
-| M8 | Office COM 被放入线程池并发执行 | 多文件批量时 Word 实例互相干扰/挂起风险 | 每个 Office 后端独立串行闸门 + 超时 |
-
-## 4. 后端清单（新架构）
+## 4. 后端清单
 
 | 后端 id | 实现 | 依赖类型 | 覆盖路由 |
 |---|---|---|---|
@@ -109,10 +99,10 @@
 
 ## 6. 用户必须安装什么（结论）
 
-* **只需 Python 3.10+ 与 `pip install -r requirements.txt`** 即可使用：
-  docx↔md/html/txt、md↔docx/html/txt、html↔docx/md/txt、xlsx→csv/md/html、csv→docx/md/html/xlsx、
+* **Slim（`pip install -r requirements.txt`）+ Python 3.10+** 即可使用：  
+  docx↔md/html/txt、md↔docx/html/txt、html↔docx/md/txt、xlsx→csv/md/html、csv→docx/md/html/xlsx、  
   pdf→txt/docx/pptx。
-* **想要"→PDF"且要求排版保真**：需要安装 **Microsoft Word（docx/md/html→pdf）** 或
-  **Microsoft Excel（xlsx→pdf）**，或 **WPS Office**（Word/Excel 的替代），或 **LibreOffice**（兜底）。
-* **完全没有 Office** 时：→PDF 不可用（除非自行安装 GTK 以启用 WeasyPrint 兜底）；其它转换仍全部可用，
-  程序会在能力面板中明确说明原因。
+* **想要「→PDF」且要求排版保真**：需安装 **Microsoft Word**（docx/md/html→pdf）或 **Microsoft Excel**（xlsx→pdf），或 **WPS Office**，或 **LibreOffice** 之一。  
+  以上均为**可选环境**，缺失时对应路由会明确不可用，不会静默失败。
+* **完全没有 Office 类软件** 时：→PDF 不可用（除非安装 GTK 以启用 WeasyPrint 兜底，且 WeasyPrint 包已随 `requirements-full.txt` 安装）；其它转换仍可用。  
+  请运行 `docmorph doctor` 查看**本机**能力，勿假设与验证机相同。

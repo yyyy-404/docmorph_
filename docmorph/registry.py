@@ -179,3 +179,49 @@ def routes_snapshot() -> list[dict[str, object]]:
 
 def sources() -> Sequence[Format]:
     return SOURCE_FORMATS
+
+
+#: 能产出 PDF 的后端 → 对应的能力项（用于缺引擎时的说明）
+PDF_BACKEND_CAPABILITIES: dict[str, str] = {
+    "word": "word",
+    "excel": "excel",
+    "wps": "wps",
+    "libreoffice": "libreoffice",
+    "weasyprint": "weasyprint",
+}
+
+PDF_BACKEND_LABELS: dict[str, str] = {
+    "word": "Microsoft Word",
+    "excel": "Microsoft Excel",
+    "wps": "WPS Office",
+    "libreoffice": "LibreOffice",
+    "weasyprint": "WeasyPrint（需 GTK）",
+}
+
+
+def pdf_output_advice(report, reason: str = "", disabled: Sequence[str] = ()) -> str:
+    """生成"为什么不能输出 PDF + 怎么办"的说明（不改变任何路由行为）。"""
+    available: list[str] = []
+    missing: list[str] = []
+    for backend_id, label in PDF_BACKEND_LABELS.items():
+        capability = report.get(PDF_BACKEND_CAPABILITIES[backend_id])
+        if backend_id in disabled:
+            continue
+        (available if capability.available else missing).append(label)
+
+    parts = ["当前环境没有可用的 PDF 输出引擎。"]
+    parts.append("已检测到：" + ("、".join(available) if available else "无"))
+    if missing:
+        parts.append("未检测到：" + "、".join(missing))
+    if disabled:
+        parts.append("安全模式下已禁用：" + "、".join(disabled))
+    parts.append(
+        "可选做法：① 安装 Microsoft Office 或 WPS Office 之一；"
+        "② 安装免费的 LibreOffice（https://www.libreoffice.org/）后重试；"
+        "③ 或先转换为 md / html / docx / txt 等无需 Office 的格式。"
+    )
+    if available:
+        parts.append(f"（当前可用引擎：{ '、'.join(available) }，可能不支持该源格式）")
+    if reason:
+        parts.append(f"路由信息：{reason}")
+    return " ".join(parts)
