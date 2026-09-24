@@ -21,6 +21,7 @@ frontend/dist/
 # Runtime artifacts (never commit)
 /input/
 /output/
+/runtime/
 /logs/
 /temp/
 config.ini

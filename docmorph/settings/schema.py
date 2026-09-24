@@ -30,7 +30,7 @@ class Settings:
     input_directory: Path
     output_directory: Path
     log_directory: Path
-    #: None = 未指定专用临时目录（使用 %LOCALAPPDATA%\DocMorph\temp）。
+    #: None = 未指定专用临时目录（使用 <程序目录>\runtime\temp）。
     #: 禁止把空字符串解析成 Path(".")，否则中间文件会依赖当前工作目录。
     temp_directory: Path | None
     # [conversion]
@@ -67,9 +67,12 @@ class Settings:
 # section -> key -> 默认值（字符串形式，便于写 ini）
 DEFAULTS: dict[str, dict[str, str]] = {
     "paths": {
-        "input_directory": str(default_input_dir()),
-        "output_directory": str(default_output_dir()),
-        "log_directory": str(default_log_dir()),
+        # 路径留空 = 使用内置默认（runtime/*、用户文档下的 DocMorph\input|output）。
+        # 让 config.ini 只记录"用户显式改过的值"：这样把整个程序目录拷到另一台机器后，
+        # 默认路径会按新机器的程序目录/用户文档重新解析，不会带着旧机器的绝对路径。
+        "input_directory": "",
+        "output_directory": "",
+        "log_directory": "",
         "temp_directory": "",
     },
     "conversion": {
@@ -155,17 +158,28 @@ def build_settings(
             warnings.append(str(exc))
             return parser(section, key, DEFAULTS[section][key], *args)
 
-    temp_raw = get("paths", "temp_directory").strip()
+    def path_or_default(section: str, key: str, default: Path) -> Path:
+        """路径取值：空 / ``.`` = 内置默认；支持 ``%USERPROFILE%`` 风格环境变量。
+
+        相对路径一律解析为绝对路径（与 :func:`temp_root` 一致），
+        避免被 Word 等 COM 组件按 system32 解析。
+        """
+        text = os.path.expandvars(get(section, key).strip())
+        if not text or text == ".":
+            return default
+        path = Path(text).expanduser()
+        return path if path.is_absolute() else path.resolve()
+
+    temp_raw = os.path.expandvars(get("paths", "temp_directory").strip())
     if not temp_raw or temp_raw == ".":
         temp_directory: Path | None = None
     else:
-        temp_directory = Path(temp_raw).expanduser()
-        if not temp_directory.is_absolute():
-            temp_directory = temp_directory.resolve()
+        temp_path = Path(temp_raw).expanduser()
+        temp_directory = temp_path if temp_path.is_absolute() else temp_path.resolve()
     settings = Settings(
-        input_directory=Path(get("paths", "input_directory")).expanduser(),
-        output_directory=Path(get("paths", "output_directory")).expanduser(),
-        log_directory=Path(get("paths", "log_directory")).expanduser(),
+        input_directory=path_or_default("paths", "input_directory", default_input_dir()),
+        output_directory=path_or_default("paths", "output_directory", default_output_dir()),
+        log_directory=path_or_default("paths", "log_directory", default_log_dir()),
         temp_directory=temp_directory,
         conflict_policy=safe("conversion.conflict_policy", parse_choice, None, CONFLICT_POLICIES),
         pdf_backend_preference=safe(
@@ -199,11 +213,13 @@ def render_default_ini() -> str:
         f"version = {CONFIG_VERSION}",
         "",
         "[paths]",
-        "# 输入 / 输出目录：默认放在用户文档目录下，不写入项目目录",
-        f"input_directory = {DEFAULTS['paths']['input_directory']}",
-        f"output_directory = {DEFAULTS['paths']['output_directory']}",
-        f"log_directory = {DEFAULTS['paths']['log_directory']}",
-        "# 留空表示使用 %LOCALAPPDATA%\\DocMorph\\temp",
+        "# 输入 / 输出目录：留空 = 默认（用户文档下的 DocMorph\\input|output）",
+        "# 注意：不要把输入输出目录设为源代码目录，避免污染项目",
+        "input_directory =",
+        "output_directory =",
+        "# 日志目录：留空 = 程序目录下的 runtime\\logs",
+        "log_directory =",
+        "# 临时工作区：留空 = 程序目录下的 runtime\\temp\\<会话 id>",
         "temp_directory =",
         "",
         "[conversion]",
@@ -257,6 +273,11 @@ def coerce_changes(changes: dict[str, Any]) -> dict[str, Any]:
 
     取值不合法时抛 :class:`ConfigValueError`，由调用方翻译成用户提示。
     """
+    path_defaults = {
+        "input_directory": default_input_dir,
+        "output_directory": default_output_dir,
+        "log_directory": default_log_dir,
+    }
     result: dict[str, Any] = {}
     for key, value in changes.items():
         if value is None:
@@ -268,8 +289,14 @@ def coerce_changes(changes: dict[str, Any]) -> dict[str, Any]:
             else:
                 path = Path(text).expanduser()
                 result[key] = path if path.is_absolute() else path.resolve()
-        elif key in {"input_directory", "output_directory", "log_directory"}:
-            result[key] = Path(str(value)).expanduser()
+        elif key in path_defaults:
+            text = str(value).strip()
+            if not text or text == ".":
+                # 留空 = 恢复内置默认（保证 config.ini 可随程序目录整体拷贝）
+                result[key] = path_defaults[key]()
+            else:
+                path = Path(text).expanduser()
+                result[key] = path if path.is_absolute() else path.resolve()
         elif key == "conflict_policy":
             result[key] = parse_choice("conversion", key, str(value), CONFLICT_POLICIES)
         elif key == "pdf_backend_preference":
@@ -293,6 +320,17 @@ def coerce_changes(changes: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _same_path(value: Path, default: Path) -> bool:
+    return os.path.normcase(os.path.normpath(str(value))) == os.path.normcase(
+        os.path.normpath(str(default))
+    )
+
+
+def _path_setting(value: Path, default: Path) -> str:
+    """与内置默认一致时写空串：config.ini 拷贝到其它机器后按该机器的默认重新解析。"""
+    return "" if _same_path(value, default) else str(value)
+
+
 def render_settings_ini(settings: Settings) -> str:
     """把当前设置写回 ini（保留文件头注释，值来自实际设置）。"""
     targets = "\n".join(
@@ -306,9 +344,9 @@ def render_settings_ini(settings: Settings) -> str:
         f"version = {CONFIG_VERSION}\n"
         "\n"
         "[paths]\n"
-        f"input_directory = {settings.input_directory}\n"
-        f"output_directory = {settings.output_directory}\n"
-        f"log_directory = {settings.log_directory}\n"
+        f"input_directory = {_path_setting(settings.input_directory, default_input_dir())}\n"
+        f"output_directory = {_path_setting(settings.output_directory, default_output_dir())}\n"
+        f"log_directory = {_path_setting(settings.log_directory, default_log_dir())}\n"
         f"temp_directory = {settings.temp_directory if settings.temp_directory is not None else ''}\n"
         "\n"
         "[conversion]\n"

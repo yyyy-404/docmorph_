@@ -47,7 +47,7 @@ _CONFLICT_FLAGS: dict[str, ConflictPolicy] = {
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", default=None, help="配置文件路径（默认用户目录下的 config.ini）")
+    parser.add_argument("--config", default=None, help="配置文件路径（默认程序目录下的 config.ini）")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（便于脚本消费）")
     parser.add_argument("-q", "--quiet", action="store_true", help="只输出结果，不输出进度细节")
 

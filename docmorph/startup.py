@@ -29,7 +29,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
-from docmorph.settings.paths import app_data_dir, default_log_dir
+from docmorph.settings.paths import default_log_dir, project_root, runtime_dir
 
 MAX_LOG_BYTES = 1 * 1024 * 1024
 BACKUP_COUNT = 3
@@ -118,7 +118,8 @@ def diagnostics() -> dict[str, Any]:
         "machine": platform.machine(),
         "frozen": _is_frozen(),
         "cwd": os.getcwd(),
-        "app_data_dir": str(app_data_dir()),
+        "project_root": str(project_root()),
+        "runtime_dir": str(runtime_dir()),
         "resource_dir": str(webapp),
         "webapp_index": str(index),
         "webapp_ok": index.exists(),
@@ -222,6 +223,8 @@ def bootstrap(
         probe.unlink(missing_ok=True)
         context.phase_ok("log_dir", time.perf_counter() - step, str(target_dir))
     except OSError as exc:
+        # 最后回退：仅当程序目录本身不可写（如装进只读位置）时才会走到这里；
+        # 正常情况下日志只写 <程序目录>/runtime/logs，不会创建 %TEMP%\DocMorph。
         fallback = Path(os.environ.get("TEMP", ".")) / "DocMorph" / "logs"
         try:
             fallback.mkdir(parents=True, exist_ok=True)

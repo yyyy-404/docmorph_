@@ -21,7 +21,7 @@ from docmorph.results import (
 from docmorph.services import ApplicationService
 from docmorph.settings import ConfigManager, Settings
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "ApplicationService",

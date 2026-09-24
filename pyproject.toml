@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docmorph"
-version = "0.3.0"
+version = "0.3.1"
 description = "Windows 优先的本地文档格式转换工具：PDF/DOCX/XLSX/MD/HTML/TXT/CSV/PPTX 互转（桌面界面 + 命令行）"
 readme = "README.md"
 requires-python = ">=3.10"

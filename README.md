@@ -2,7 +2,7 @@
 
 Windows 优先的**本地**文档格式转换工具：桌面界面 + 命令行，支持 PDF / DOCX / XLSX / MD / HTML / TXT / CSV 互转。文件不上传服务器，不联网、不需要数据库。
 
-当前版本：**0.3.0**
+当前版本：**0.3.1**
 
 ---
 
@@ -24,7 +24,7 @@ Windows 优先的**本地**文档格式转换工具：桌面界面 + 命令行�
 - 后端能力检测与自动降级（Word / Excel / WPS / LibreOffice / Pandoc / WeasyPrint）
 - PDF 工具：合并；按页范围拆分/提取（`1-3,5,7-9`，留空 = 每页一个）
 - 冲突策略：`rename`（默认）/ `overwrite` / `skip`；任务可取消
-- 日志：`%LOCALAPPDATA%\DocMorph\logs`，界面可查看
+- 日志：`runtime/logs/`（程序目录下），界面可查看
 - 配置：默认值 → 用户配置 → `DOCMORPH_*` 环境变量 → 命令行/界面参数
 - 启动保护与 `--safe-mode`（启动异常时仍可用内置能力诊断）
 
@@ -171,12 +171,25 @@ docmorph_/
 ├── packaging/                # PyInstaller 构建脚本
 ├── run.py                    # 总启动入口
 ├── config.example.ini        # 配置字段说明
+├── config.ini                # 用户配置（首次运行自动生成，不入库）
 ├── pyproject.toml            # 打包元数据与入口点
 ├── requirements.txt          # Slim 运行依赖
 ├── requirements-full.txt     # Full 功能依赖
 ├── README.md
-└── CONVERSION_MATRIX.md      # 转换能力矩阵
+├── CONVERSION_MATRIX.md      # 转换能力矩阵
+└── runtime/                  # 运行时数据（按需生成，不入库）
+    ├── logs/                 # 会话日志 / 启动日志 / 崩溃日志
+    ├── cache/                # DocMorph 自有缓存（当前版本无独立磁盘缓存时不会创建）
+    ├── temp/                 # 转换中间文件（会话目录，退出后清理）
+    └── webview/              # WebView2 用户数据（profile / cache / cookies）
 ```
+
+**运行时数据目录**：DocMorph 默认把运行日志、缓存、临时文件和 WebView 数据存放在
+**程序目录**下的 `runtime/` 中，配置为程序目录下的 `config.ini`，不写入
+`%LOCALAPPDATA%\DocMorph` / `%APPDATA%\DocMorph`，因此把整个目录（Full 版含
+`DocMorph.exe`）拷贝到另一台 Windows 电脑即可直接使用。
+例外说明：第三方组件（Word/WPS/LibreOffice COM、WeasyPrint、pandoc 等）自身可能仍会
+在系统 `%TEMP%` 下产生**短生命周期**的临时文件，这类文件不受 DocMorph 控制。
 
 ## 9. 维护者：构建 Full（PyInstaller）
 

@@ -22,6 +22,7 @@ from docmorph import __version__
 from docmorph.logging_setup import get_logger
 from docmorph.services import ApplicationService
 from docmorph.settings import ConfigManager
+from docmorph.settings.paths import webview_dir
 from docmorph.startup import (
     StartupContext,
     bootstrap,
@@ -256,7 +257,9 @@ def run(
         service.shutdown()
         return EXIT_BAD_ENVIRONMENT
 
-    storage = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "DocMorph" / "webview"
+    # WebView2 用户数据（profile / cache / cookies / local storage / GPU cache）
+    # 从源头指定到程序目录下的 runtime/webview，而不是 %LOCALAPPDATA%\DocMorph。
+    storage = webview_dir()
     try:
         storage.mkdir(parents=True, exist_ok=True)
     except OSError:

@@ -1,7 +1,7 @@
 {
   "name": "docmorph-frontend",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "DocMorph 桌面端界面（Vue 3 + TypeScript + Vite）",
   "scripts": {
